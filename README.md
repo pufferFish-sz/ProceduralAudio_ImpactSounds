@@ -145,6 +145,8 @@ proto/
               rolling_sliding_vs_recordings.md (recordings analysis,
               rolling model, slide fixes, render-vs-real numbers)
               cpp_plugin_design.md (C++ core + FMOD/Wwise plugin design)
+              plugin_body_design.md (any object vs any object: Shape +
+              Material + Size + Mount, FMOD deck, phases)
   recordings/ put real reference recordings here (see its README)
 ```
 

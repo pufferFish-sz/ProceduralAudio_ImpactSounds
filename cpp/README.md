@@ -21,6 +21,9 @@ core/include/procaudio/
               floor / ball / box factories, SoundingBody
   exciters.h  simulate_impact_implicit, RollExciter, SlideExciter (streaming)
   voice.h     ContactVoice: object + floor + exciters + scheduled impacts
+  body_desc.h any body from Shape + Material + Size + Mount; pair physics
+              (effective mass, restitution, pair_mu); make_pair_voice
+              (design: proto/docs/plugin_body_design.md)
   scenes.h    offline scenes mirroring the Python listening sets, WAV output
 tools/render.cpp          procaudio_render: scenes + golden-case runner
 tests/test_core.cpp       unit + real-time behaviour tests
@@ -87,46 +90,86 @@ cpp/build/Release/procaudio_render.exe scene ball_drop    cpp/build/renders/ball
 It is written against the FMOD 2.02 plug-in API, to match the installed
 FMOD Studio 2.02.23.
 
-**Parameters (v1.2).** `procaudio_fmod.plugin.js` lays them out in Studio:
-150 px dropdowns for Object, Surface and Motion, dials for the rest. The
-deck's context menu offers Level presets per motion.
+**Parameters (v2.2): any object against any target.** The design is in
+[`proto/docs/plugin_body_design.md`](../proto/docs/plugin_body_design.md).
+`procaudio_fmod.plugin.js` lays the deck out in three framed columns,
+OBJECT | TARGET | MOTION, with a line between object and target
+(`procaudio_fmod_divider.png`). The deck's context menu offers Level and
+Speed presets per motion and four example setups (stick knocks a wooden
+ball, two glass marbles clink, cardboard box dropped on concrete, steel
+ball rolls on a polished wood floor).
 
 | parameter | type | meaning |
 |---|---|---|
-| Object | dropdown | wood / steel ball S/L, cardboard / steel box S/L |
-| Surface | dropdown | varnished wood, wood floor, concrete, tile, rug |
-| Motion | dropdown | **Impact**: one hit when the instrument starts. **Drop**: a dropped object (balls bounce; boxes land, rock on their edges and settle, Housner rocking). **Roll** / **Slide**: continuous at Speed, never a hit. |
-| Speed | dial, m/s | roll/slide speed, 80 ms smoothing (default 0.5) |
-| Impact | dial, m/s | hit / landing speed (default 2). In Impact and Drop it fires at the instrument start and on every new value. |
+| Obj Shape | dropdown | Ball, Stick, Box, Panel, Ground |
+| Target | dropdown | **Same as object** (two equal bodies; the other target controls are then ignored, and the target dials read `same as object`), Ball, Stick, Box, Panel, **Ground** (a slab on the earth: concrete, stone) |
+| Obj Material / Tgt Material | dropdown | metal, glass, wood, plastic, rubber, stone, cardboard, concrete, ceramic |
+| Tgt Finish ("Floor finish", target only) | dropdown | applies to Panel and Ground targets only (other shapes are always bare): the floor surface the object hits, lands, rolls or slides on. **Bare**: the material itself. **Polished**: smooth coat (varnish, lacquer); same hits, smoother roll/slide. **Tiled**: hard ceramic layer; brighter hits, the body underneath still rings. **Carpeted**: soft layer; dull thuds, little bounce, fuzzy rolling. |
+| Obj Mount / Tgt Mount | dropdown | **Free** (thrown, falling), **Held** (in a hand; a held stick is a rigid striker), **Resting** (sits on a support), **Built-in** (floor, wall) |
+| Obj Size / Tgt Size | log dial, m | ball diameter, stick length, box side, panel/slab span. The label shows what it means: `6.0 cm, 882 g, 7.5 kHz` (size used, mass, lowest mode). |
+| Obj Thickness / Tgt Thickness | log dial, m | stick section, box wall, plate thickness; 0 = auto (label: `auto (2.4 cm)`) |
+| Obj Hit Pos / Tgt Hit Pos | dial 0..1 ("Hit position") | where on the body the contact is: 0 center (stick: middle), 1 edge (stick: end; held stick: tip). The center of a plate only rings its symmetric modes; toward the edge more modes join in (brighter, more complex). Sticks: which overtones ring, and how heavy the hit feels (a free stick's end feels like a quarter of its mass). No effect on balls (label: `any spot (ball)`). |
+| Motion | dropdown | **Impact**: one hit when the instrument starts. **Drop**: the object dropped on the target (balls bounce; boxes land, rock on their edges and settle). **Roll** (Ball only; other shapes slide) / **Slide**: continuous at Speed, never a hit. |
+| Speed | log dial, m/s | one knob whose meaning follows Motion (the label says which): **Impact / Drop**: hit or landing speed (`hit at 2 m/s`, `drop 2 m/s = from 20 cm`); it fires at the instrument start and on every new value. **Roll / Slide**: rolling or sliding speed, 80 ms smoothing. Default 2; the Roll / Slide presets set 0.5. |
+| Render | dropdown | Both, Object only, Target only: when the other body has its own event, each event plays only its own body |
 | Level | dial, dB | gain over the calibration 0 dBFS = 63 Pa at 1 m (130 dB SPL), range −40…+80. Presets: Impact / Drop 0, Roll +35, Slide +50. |
-| Contacts | data | `ContactMsg[]` for game code: kind 0 impact, 1 slide, 2 roll, 3 release, 4 drop; sample offsets |
+| Contacts | data | `ContactMsg[]` for game code: kind 0 impact, 1 slide, 2 roll, 3 release, 4 drop; sample offsets. The target id field is reserved for the body registry (phase 4). |
+
+The defaults (Ball / metal / 6 cm on a built-in, varnished 2.4 m wood panel)
+are v1.2's "Steel ball L" on "Varnished wood". **Events made with an
+earlier version need their plug-in instrument set up again**: Studio
+identifies parameters by name, and v1.2's Object / Surface, v2.0's Obj
+Finish / Obj Hit / Impact and v2.1's Tgt Shape are gone (v2.2's Target
+dropdown now holds 0 = Same as object, then the shapes).
+
+Studio 2.02 decks are static: a deck widget has no enabled or visible
+state and no change callback, so controls cannot grey out when another
+choice makes them irrelevant. Instead an ignored control says so in its
+value label (`same as object`), and the Floor finish names where it
+applies.
+
+**Changing a body never cuts the sound.** The new voice takes over at the
+next contact while the old one rings out (a roll/slide crossfades through
+the speed smoothers). The host test renders a ringing hit with and without
+a Size change in the middle: the two renders are identical (difference
+−573 dB).
 
 **Start-up.** Studio creates a fresh plug-in instance on every Play.
 - **v1.0:** built its surface tables and impact calibration each time, so
   every Play stayed silent for 0.5–0.95 s.
 - **v1.1:** takes everything from a process-wide cache (`core/catalog.h`).
-  - A warm voice is ready in ~5–9 ms. Sound starts in the first mix block.
-  - The cache is prewarmed on a background thread when FMOD registers the
-    plug-in: all 8 × 5 presets in ~9 s.
-  - Only a Play within those first seconds can still wait, up to ~0.7 s.
+  A warm voice is ready in ~5–9 ms, and sound starts in the first mix block.
+- **v2.0:** the cache works per body description:
+  - contact damping per pair;
+  - rolling tables per ball material × radius step (1/6 octave) × texture;
+  - sliding tables per texture.
 
-**Built and tested (2026-11-06, v1.2).** Built against the FMOD Engine
+  Roll and slide tables are built only when Motion needs them. A cold
+  impact pair takes a few ms, and its builder thread builds only the last
+  of a burst of parameter changes (3 ms quiet). The old presets, as
+  descriptions, are prewarmed when FMOD registers the plug-in.
+
+**Built and tested (2026-11-06, v2.2).** Built against the FMOD Engine
 2.02.23 SDK. The DLL exports `FMODGetDSPDescription`.
 
 `plugins/fmod/fmod_host_test.cpp` loads it into the real FMOD engine and
 drives it the way Studio does: a new instance per Play, parameters set right
-after creation. It renders through FMOD's NRT WAV writer.
-`tests/fmod_host_check.py` checks the render. All pass:
+after creation. It renders through FMOD's NRT WAV writer, pacing the cold
+pairs at real time. `tests/fmod_host_check.py` checks the render. All pass:
 
 | segment | result |
 |---|---|
-| impact, steel ball L | sounds in the first mix block; a one-shot (tail −42 dB) |
-| impact retrigger | a new Impact value fires again |
-| drop, cardboard box | landing + rocking settle; one-shot |
+| impact, steel ball 6 cm | sounds in the first mix block; a one-shot (tail −47 dB) |
+| impact retrigger | a new Speed value fires again (Impact mode) |
+| drop, cardboard box on concrete | landing + rocking settle; one-shot |
 | drop, steel ball | bounce series; one-shot |
-| roll, Impact set to 2 | Impact does not fire; onset +1.6 dB re steady state (no hit) |
-| slide | onset −1.0 dB (no hit) |
+| roll | no hit; onset +0.5 dB re steady state |
+| slide, steel box on concrete | onset −0.4 dB (no hit) |
 | after stop | digital silence |
+| held stick → wooden ball (cold, no preset) | sounds 40 ms after Play |
+| glass marble → same marble (cold) | sounds 40 ms after Play; the two clicks do not cancel |
+| Render: Target only (concrete slab) | the slab alone |
+| Size changed while ringing | identical to the unchanged ring |
 
 **Build:**
 
@@ -139,9 +182,11 @@ cmake --build cpp/build --config Release
 The output is `cpp/build/plugins/fmod/Release/procaudio_fmod.dll`.
 
 **Install:**
-- **FMOD Studio 2.02:** copy `procaudio_fmod.dll` and
-  `procaudio_fmod.plugin.js` (both in the build output folder) into
-  `%localappdata%\FMOD Studio\Plugins`, then restart Studio. That folder is
+- **FMOD Studio 2.02:** close Studio (it locks the DLL), copy
+  `procaudio_fmod.dll`, `procaudio_fmod.plugin.js` and
+  `procaudio_fmod_divider.png` (all in the build output folder) into
+  `%localappdata%\FMOD Studio\Plugins`, then start Studio. **Building does
+  not install**: Studio keeps loading whatever copy is in that folder. That folder is
   loaded automatically; the custom-folder setting is under Preferences →
   Assets. For a shared project, use a `Plugins` folder next to the `.fspro`
   instead.

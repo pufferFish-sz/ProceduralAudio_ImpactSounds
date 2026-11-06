@@ -9,6 +9,11 @@ NRT WAV writer; this script checks every segment:
   - roll / slide segments start WITHOUT a hit (onset not louder than the
     steady part) and Impact does not fire in those modes
   - after the motion stops the voice goes silent
+  - v2.0: pairs with no preset (held stick -> wooden ball, two equal glass
+    marbles) sound within 200 ms of Play (cold build, no prewarm); Render
+    "Target only" plays the target; changing the object's Size while it
+    rings never touches the ring: the render equals the same hit without
+    the change (ring_ref) within -60 dB
 
     python cpp/tests/fmod_host_check.py
 """
@@ -46,15 +51,20 @@ def main() -> int:
     if r.returncode != 0:
         print(r.stderr)
         return 1
+    ok = '(same as object) -> "same as object"' in r.stdout   # ignored dials say so
+    print(f"  {'PASS' if ok else 'FAIL'}  Tgt dials read 'same as object' when Target = Same as object")
     y, fs = sf.read(str(wav), always_2d=True)
     y = y.mean(axis=1)
-    ok = True
+    spans = {}
     for line in segs.read_text().split("\n"):
         if not line.strip():
             continue
         label, t0, t1 = line.split()
-        if label == "gap":                               # stop + release between Plays
+        spans[label] = (float(t0), float(t1))
+        if label in ("gap", "size_swap", "ring_ref"):    # gap: stop + release between Plays
             continue
+        if label == "size_swap_after":                   # the ring across the Size change
+            t0 = spans["size_swap"][0]
         s = y[int(float(t0) * fs):int(float(t1) * fs)]
         fr = frames(s, fs)
         rms, peak = np.sqrt(np.mean(s ** 2)), np.max(np.abs(s))
@@ -67,14 +77,32 @@ def main() -> int:
             good &= tail < -80
             notes.append(f"last 1 s {tail:.0f} dBFS")
         else:
-            good &= rms > 10 ** (-70 / 20)
-            if label.startswith(("impact", "drop")) and label != "impact_retrigger":
+            # sounding: rms for continuous sound; a lone click (two marbles) has a
+            # clear peak but a tiny rms over the whole segment
+            good &= rms > 10 ** (-70 / 20) or peak > 10 ** (-50 / 20)
+            if label.startswith("pair_"):                       # cold build, no prewarm
+                good &= first_ms <= 200.0
+                notes.append(f"first sound {first_ms:.0f} ms after Play")
+            elif (label.startswith(("impact", "drop", "render_target", "size_swap"))
+                    and label != "impact_retrigger"):
                 good &= first_ms <= 1000.0 * BLOCK / fs + 5.0   # within one mix block
                 notes.append(f"first sound {first_ms:.0f} ms after Play")
+            if label == "size_swap_after":
+                # the old voice rings out untouched and the new one is silent
+                # until its next contact: identical to the unchanged hit
+                # separate Plays start a few samples apart: align first
+                r0 = int(spans["ring_ref"][0] * fs)
+                n = int(0.1 * fs)
+                lags = range(-16, 17)
+                r0 += max(lags, key=lambda k: float(np.dot(s[:n], y[r0 + k:r0 + k + n])))
+                ref = y[r0:r0 + len(s)]
+                diff = db(np.sqrt(np.mean((s - ref) ** 2))) - db(np.sqrt(np.mean(ref ** 2)))
+                good &= diff < -60.0
+                notes.append(f"differs from the unchanged ring by {diff:.0f} dB")
             elif label in ("roll", "slide"):                   # starts gently (80 ms)
                 good &= first_ms <= 300.0
                 notes.append(f"audible {first_ms:.0f} ms after Play")
-        if label.startswith(("impact", "drop")):
+        if label.startswith(("impact", "drop", "pair_", "render_target", "size_swap")):
             tail = db(np.sqrt(np.mean(s[-int(0.25 * fs):] ** 2)))
             good &= tail < db(rms) - 20                 # a one-shot: it dies away
             notes.append(f"tail {tail - db(rms):+.0f} dB re segment rms")

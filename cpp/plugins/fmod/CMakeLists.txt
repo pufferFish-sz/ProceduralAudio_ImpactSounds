@@ -8,7 +8,8 @@ target_link_libraries(procaudio_fmod PRIVATE procaudio_core)
 # Studio deck layout (dropdowns) must sit next to the DLL
 add_custom_command(TARGET procaudio_fmod POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${CMAKE_CURRENT_SOURCE_DIR}/procaudio_fmod.plugin.js" $<TARGET_FILE_DIR:procaudio_fmod>)
+          "${CMAKE_CURRENT_SOURCE_DIR}/procaudio_fmod.plugin.js"
+          "${CMAKE_CURRENT_SOURCE_DIR}/procaudio_fmod_divider.png" $<TARGET_FILE_DIR:procaudio_fmod>)
 
 # Integration test host: the real FMOD engine loads and plays the plugin
 # (cpp/tests/fmod_host_check.py runs it and checks the result).

@@ -64,6 +64,13 @@ PHYSICAL: dict[str, dict] = {
     # object (order of magnitude, ~0.2 MPa: a can sinks ~0.2 mm), not a
     # fibre property
     "carpet": dict(E=0.2e6, rho=200.0, nu=0.30),
+    # lawn turf (thatch + moist topsoil) under the grass blades: EFFECTIVE
+    # contact modulus, calibrated so the model's own drop of a Clegg impact
+    # hammer (ASTM F1702: 2.25 kg, 50 mm flat face, 0.45 m) reads 70 g, a
+    # kept lawn (the NFL limit is 100 g; dry compacted fields read > 200 g).
+    # 50 g -> E 0.96 MPa, 100 g -> 3.9 MPa (elasto-plastic soil law of
+    # core/grass.drop_on_grass). core/grass.clegg_gmax checks it.
+    "turf": dict(E=1.9e6, rho=1300.0, nu=0.30),
 }
 
 # Hand-authored "shapes": mode frequency sets + relative gains. These are NOT

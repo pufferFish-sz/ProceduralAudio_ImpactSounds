@@ -1,6 +1,8 @@
 #include "procaudio/catalog.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <string>
@@ -187,6 +189,170 @@ void prewarm_presets(double fs, const std::atomic<bool>* stop) {
         for (int o = 0; o < kNumObjects; ++o) {
             if (stop && stop->load()) return;
             build_assets(o, s, fs, nullptr);
+        }
+}
+
+// ---------------------------------------------------------- any pair
+
+BodyDesc preset_object_desc(int i) {
+    const ObjectPreset& o = kObjects[clamp_obj(i)];
+    BodyDesc d;
+    d.material = o.material;
+    if (o.ball) {
+        d.shape = Shape::Ball;
+        d.size = 2.0 * o.radius;
+    } else {
+        d.shape = Shape::Box;
+        d.size = o.a;
+        d.thickness = o.wall;
+    }
+    return d;
+}
+
+BodyDesc preset_surface_desc(int i) {
+    BodyDesc d;
+    d.mount = Mount::BuiltIn;
+    const std::string slug = surface_preset_slug(i);
+    if (slug == "concrete-slab" || slug == "tile-floor") {
+        d.shape = Shape::Ground;
+        d.material = "concrete";
+        d.size = 4.0;
+        if (slug == "tile-floor") d.finish = Finish::Tiled;
+    } else {                                       // the 2.4 x 1.2 m wood floor bay
+        d.shape = Shape::Panel;
+        d.material = "wood";
+        d.size = 2.4;
+        if (slug == "varnished-wood-floor") d.finish = Finish::Polished;
+        if (slug == "rug") d.finish = Finish::Carpeted;
+    }
+    return d;
+}
+
+double roll_radius_step(double radius) {
+    double steps = std::round(6.0 * std::log2(std::max(radius, 1e-4) / 0.01));
+    return 0.01 * std::pow(2.0, steps / 6.0);
+}
+
+namespace {
+
+// Rim of a ball of this material and radius. Wood and steel reproduce the
+// catalog balls (scenes/roll.py) at their radii; the rest are plausibility
+// presets (smooth glass, molded plastic, rubber, rough stone).
+RimSpec rim_for(const std::string& m, double r) {
+    RimSpec s;
+    auto ecc = [&](double e_ref, double r_ref, double p) { return e_ref * std::pow(r / r_ref, p); };
+    if (m == "wood") { s.ecc = ecc(20e-6, 0.02, 0.756); s.rough_h_rms = 3e-6; s.rough_gamma = 2.2; }
+    else if (m == "metal") { s.ecc = ecc(1e-6, 0.01, 0.631); s.rough_h_rms = 0.1e-6; s.rough_gamma = 2.4; }
+    else if (m == "glass" || m == "ceramic") { s.ecc = ecc(2e-6, 0.02, 0.7); s.rough_h_rms = 0.05e-6; s.rough_gamma = 2.4; }
+    else if (m == "plastic") { s.ecc = ecc(10e-6, 0.02, 0.7); s.rough_h_rms = 1e-6; s.rough_gamma = 2.2; }
+    else if (m == "rubber") { s.ecc = ecc(50e-6, 0.02, 0.7); s.rough_h_rms = 5e-6; s.rough_gamma = 2.0; }
+    else { s.ecc = ecc(30e-6, 0.02, 0.7); s.rough_h_rms = 5e-6; s.rough_gamma = 2.2; }
+    return s;
+}
+
+std::string desc_key(const BodyDesc& d) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "%d|%s|%.6g|%.6g|%d|%.4g|%d", static_cast<int>(d.shape),
+                  d.material.c_str(), d.size, d.thickness, static_cast<int>(d.mount), d.hit,
+                  static_cast<int>(d.finish));
+    return buf;
+}
+
+std::string pair_key(const BodyDesc& o, const BodyDesc& t, double fs) {
+    return "pmu|" + desc_key(o) + "#" + desc_key(t) + "|" +
+           std::to_string(static_cast<long long>(fs));
+}
+
+// the ball as the rolling tables see it: radius on the 1/6-octave grid
+Body roll_ball(const Body& ball) {
+    Body q = ball;
+    double r = ball.contact_radius, rq = roll_radius_step(r);
+    q.contact_radius = rq;
+    q.mass = ball.mass * std::pow(rq / r, 3.0);
+    return q;
+}
+
+// from the descriptions alone (no body build: desc_assets_ready is called
+// on every parameter change)
+std::string roll_key(const BodyDesc& od, const BodyDesc& td) {
+    const double r = 0.5 * std::min(size_max(od.shape), std::max(size_min(od.shape), od.size));
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.6g", roll_radius_step(r));
+    return "droll|" + od.material + "|" + buf + "|" + texture_of(td) + "|" +
+           contact_material(td) + "|" + contact_material(od);
+}
+
+struct DescBuild {
+    Body o, t;
+    double e = 0.0;
+};
+
+DescBuild desc_bodies(const BodyDesc& od, const BodyDesc& td) {
+    DescBuild b{make_body(od), make_body(td), 0.0};
+    // a box meeting a floor lands on its bottom face (catalog boxes do the same)
+    if (od.shape == Shape::Box && b.t.fixed && od.mount != Mount::Resting)
+        add_contact_damping(b.o, kBoxContactLoss);
+    b.e = pair_restitution(b.o.mat, b.t.mat);
+    return b;
+}
+
+void build_desc(const BodyDesc& od, const BodyDesc& td, double fs, bool motion,
+                std::unique_ptr<ContactVoice>* voice_out) {
+    DescBuild b = desc_bodies(od, td);
+    Cache& c = cache();
+    const bool ball = motion && od.shape == Shape::Ball && b.o.contact_radius > 0.0;
+    RollParams rp;
+    RollTables rt;
+    if (ball) {
+        Body q = roll_ball(b.o);
+        rp = roll_params(q, b.t);
+        rt = get_or_build(c.roll, roll_key(od, td), [&] {
+            return RollExciter::build_tables(rp, surface_spec(texture_of(td)),
+                                             rim_for(od.material, q.contact_radius));
+        });
+    }
+    SlideParams sp = slide_params(b.o, b.t);
+    std::vector<SplinePtr> st;
+    if (motion)
+        st = get_or_build(c.slide, std::string("dslide|") + texture_of(td), [&] {
+            return SlideExciter::build_tables(sp, surface_spec(texture_of(td)));
+        });
+    double mu = get_or_build(c.mu, pair_key(od, td, fs),
+                             [&] { return pair_mu(b.o, b.t, b.e, fs); });
+    if (!voice_out) return;
+    auto v = std::make_unique<ContactVoice>();
+    v->prepare(fs, b.o, b.t);
+    if (ball) v->prepare_roll_shared(rp, rt);
+    if (motion) v->prepare_slide_shared(sp, st);
+    v->set_impact_dissipation(mu, 1.0);
+    v->set_restitution(b.e);
+    *voice_out = std::move(v);
+}
+
+}  // namespace
+
+std::unique_ptr<ContactVoice> make_desc_voice(const BodyDesc& object, const BodyDesc& target,
+                                              double fs, bool motion) {
+    std::unique_ptr<ContactVoice> v;
+    build_desc(object, target, fs, motion, &v);
+    return v;
+}
+
+bool desc_assets_ready(const BodyDesc& od, const BodyDesc& td, double fs, bool motion) {
+    std::string rk;
+    if (motion && od.shape == Shape::Ball) rk = roll_key(od, td);
+    Cache& c = cache();
+    std::lock_guard<std::mutex> lock(c.mtx);
+    return (rk.empty() || c.roll.count(rk)) &&
+           (!motion || c.slide.count(std::string("dslide|") + texture_of(td))) &&
+           c.mu.count(pair_key(od, td, fs));
+}
+
+void prewarm_desc_presets(double fs, const std::atomic<bool>* stop) {
+    for (int s = 0; s < kNumSurfaces; ++s)
+        for (int o = 0; o < kNumObjects; ++o) {
+            if (stop && stop->load()) return;
+            build_desc(preset_object_desc(o), preset_surface_desc(s), fs, true, nullptr);
         }
 }
 

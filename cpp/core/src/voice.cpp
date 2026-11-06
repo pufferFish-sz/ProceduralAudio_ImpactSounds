@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 namespace pa {
 
@@ -18,6 +19,17 @@ double restitution_of(const Material& m) {
     if (m.name == "wood" || m.name == "plastic") return 0.60;
     if (m.name == "stone") return 0.50;
     return 0.30;   // cardboard and other soft, lossy materials
+}
+
+double strike_mass(const Body& b) {
+    return b.strike_mass > 0.0 ? b.strike_mass : b.mass;
+}
+
+double pair_effective_mass(const Body& mover, const Body& target) {
+    double m1 = strike_mass(mover), m2 = strike_mass(target);
+    if (target.fixed) return m1;     // object onto a floor / anchored body
+    if (mover.fixed) return m2;      // a free body flies into a fixed "mover"
+    return m1 * m2 / (m1 + m2);
 }
 
 static std::vector<Mode> joined_modes(const Body& a, const Body& b) {
@@ -119,6 +131,18 @@ void ContactVoice::prepare(double fs, const Body& object, const Body& floor) {
     impact_pos_ = 0;
     contact_modes_ = joined_modes(object_, floor_);
     k_impact_ = impact_stiffness(object_, floor_);
+    m_eff_ = pair_effective_mass(object_, floor_);
+    // Two free bodies are pushed apart, so their rigid-body clicks have
+    // opposite signs; from one point they would cancel (two equal marbles:
+    // silence). They radiate from their centers, d apart, so the target's
+    // sound arrives d cos(theta) / c later; cos(theta) -> its rms 1/sqrt(3).
+    tgt_delay_ = 0.0;
+    if (!floor_.fixed) {
+        double d = object_.center_offset + floor_.center_offset;
+        tgt_delay_ = std::min(60.0, d / (kCAir * std::sqrt(3.0)) * fs);
+    }
+    std::fill(std::begin(tgt_hist_), std::end(tgt_hist_), 0.0);
+    tgt_pos_ = 0;
     roll_.reset();
     slide_.reset();
     motion_ = Motion::None;
@@ -153,7 +177,12 @@ void ContactVoice::set_smoothing(double tau_s) { smooth_.setup(tau_s, fs_); }
 double ContactVoice::impact(double v_normal, int offset, double mu, double m_eff) {
     if (v_normal <= 0.0) return 0.0;
     if (mu < 0.0) mu = mu_ref_ * v_ref_ / std::max(v_normal, 1e-3);
-    if (m_eff <= 0.0) m_eff = object_.mass;
+    if (m_eff <= 0.0) {
+        m_eff = m_eff_;
+    } else if (!floor_.fixed) {
+        double m2 = strike_mass(floor_);
+        m_eff = m_eff * m2 / (m_eff + m2);
+    }
     ImpactResult r = simulate_impact_implicit(m_eff, v_normal, k_impact_, 1.5,
                                               mu * k_impact_, contact_modes_, fs_);
     last_contact_time_ = r.contact_time;
@@ -176,7 +205,8 @@ void ContactVoice::push_scheduled(long long at, double v, double m_eff) {
 
 void ContactVoice::drop(double v_drop, int offset) {
     DropHit hits[40];
-    int n = drop_sequence_into(object_, v_drop, restitution_of(object_.mat), 0.25, 40,
+    double e = e_drop_ >= 0.0 ? e_drop_ : restitution_of(object_.mat);
+    int n = drop_sequence_into(object_, v_drop, e, 0.25, 40,
                                0.01, hits);
     const long long t0 = now_ + std::max(0, offset);
     for (int i = 0; i < n; ++i)
@@ -200,7 +230,16 @@ void ContactVoice::process_stems(double* obj_out, double* floor_out, int n,
         if (motion_ == Motion::Roll && roll_) F += roll_->process(std::abs(v));
         if (motion_ == Motion::Slide && slide_) F += slide_->process(v);
         obj_out[i] = obj_snd_.process(F, -1.0);
-        floor_out[i] = floor_snd_.process(F, +1.0);
+        double tg = floor_snd_.process(F, +1.0);
+        if (tgt_delay_ > 0.0) {   // fractional delay, linear interpolation
+            tgt_pos_ = (tgt_pos_ + 1) & 63u;
+            tgt_hist_[tgt_pos_] = tg;
+            const int di = static_cast<int>(tgt_delay_);
+            const double fr = tgt_delay_ - di;
+            tg = (1.0 - fr) * tgt_hist_[(tgt_pos_ - di) & 63u] +
+                 fr * tgt_hist_[(tgt_pos_ - di - 1) & 63u];
+        }
+        floor_out[i] = tg;
         ++now_;
     }
 }

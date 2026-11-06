@@ -32,6 +32,12 @@ double impact_stiffness(const Body& object, const Body& floor);
 // added: soft, lossy).
 double restitution_of(const Material& m);
 
+// Effective mass at the contact point: Body::strike_mass, or the mass.
+double strike_mass(const Body& b);
+// Mass the contact solve sees: the mover's strike mass against a fixed
+// target, else the reduced mass m1 m2 / (m1 + m2) (two free bodies).
+double pair_effective_mass(const Body& mover, const Body& target);
+
 // One impact of a drop sequence: time after the first touchdown, normal
 // speed, effective mass of the striker.
 struct DropHit { double t, v, m_eff; };
@@ -65,9 +71,12 @@ public:
     // Impact dissipation: mu = mu_ref * v_ref / v keeps the restitution
     // near-constant over speed (proto scenes/common.bounce_scene).
     void set_impact_dissipation(double mu_ref, double v_ref) { mu_ref_ = mu_ref; v_ref_ = v_ref; }
+    // Restitution of drop bounce sequences; < 0: restitution_of(object material).
+    void set_restitution(double e) { e_drop_ = e; }
 
     // One impact at normal speed v, `offset` samples into the next process()
-    // call. m_eff <= 0: the object's mass. mu < 0: from the dissipation
+    // call. m_eff <= 0: pair_effective_mass(object, target); a given m_eff
+    // (a drop hit) is reduced against a free target. mu < 0: from the dissipation
     // setting. Returns the rebound speed of the contact solve.
     double impact(double v_normal, int offset, double mu = -1.0, double m_eff = -1.0);
     // Schedule a whole drop (ball bounces / box landing + rocking), starting
@@ -103,8 +112,13 @@ private:
     std::vector<double> impact_buf_;   // scheduled impact force, ring buffer
     std::size_t impact_pos_ = 0;
     std::vector<Mode> contact_modes_;  // object + floor modes for the solve
-    double k_impact_ = 0.0, last_contact_time_ = 0.0;
-    double mu_ref_ = 0.3, v_ref_ = 1.0;
+    double k_impact_ = 0.0, m_eff_ = 0.0, last_contact_time_ = 0.0;
+    // a free target radiates from its own center: its stem arrives later by
+    // the center separation / c (listener direction averaged: / sqrt 3)
+    double tgt_delay_ = 0.0;               // samples, 0 = none (fixed targets)
+    double tgt_hist_[64] = {};
+    unsigned tgt_pos_ = 0;
+    double mu_ref_ = 0.3, v_ref_ = 1.0, e_drop_ = -1.0;
     long long now_ = 0;                // samples processed
     Scheduled sched_[64];              // pending drop hits (sorted by time)
     int n_sched_ = 0;

@@ -1,10 +1,12 @@
 // Unit and real-time behaviour tests for procaudio-core (no framework).
 // Golden comparisons against the Python prototype live in golden.py.
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <vector>
 
+#include "procaudio/body_desc.h"
 #include "procaudio/catalog.h"
 #include "procaudio/voice.h"
 
@@ -263,6 +265,233 @@ static void test_start_onsets() {
     }
 }
 
+// ------------------------------------------------------------ body descriptions
+
+// same set of modes; order-free, because degenerate pairs (equal frequency)
+// can swap places on a last-bit difference in a dimension
+static bool same_modes(const Body& a, const Body& b) {
+    if (a.modes.size() != b.modes.size()) return false;
+    auto key = [](std::vector<Mode> m) {
+        std::sort(m.begin(), m.end(), [](const Mode& p, const Mode& q) {
+            double fp = std::round(p.freq * 1e3), fq = std::round(q.freq * 1e3);
+            return fp != fq ? fp < fq : p.mass < q.mass;
+        });
+        return m;
+    };
+    auto A = key(a.modes), B = key(b.modes);
+    for (std::size_t i = 0; i < A.size(); ++i)
+        if (std::abs(A[i].freq - B[i].freq) > 1e-9 * A[i].freq ||
+            std::abs(A[i].mass - B[i].mass) > 1e-9 * A[i].mass ||
+            std::abs(A[i].decay - B[i].decay) > 1e-9 * (A[i].decay + 1e-12))
+            return false;
+    return true;
+}
+
+static void test_body_desc() {
+    // the catalog presets are special cases of a description
+    Body p = make_preset_object(3);   // Steel ball L, r = 30 mm
+    Body d = make_body({Shape::Ball, "metal", 0.060});
+    CHECK(same_modes(p, d) && std::abs(p.mass - d.mass) < 1e-12,
+          "Steel ball L preset != Ball/metal/60 mm description");
+    BodyDesc card{Shape::Box, "cardboard", 0.30};
+    Body pc = make_preset_object(4);  // Card box S (includes face-contact damping)
+    Body dc = make_body(card);
+    add_contact_damping(dc, 0.10);
+    CHECK(same_modes(pc, dc) && std::abs(pc.mass - dc.mass) < 1e-12,
+          "Card box S preset != Box/cardboard/30 cm description");
+    // a finish applies to floors only (Panel, Ground): a "tiled" ball is a ball
+    BodyDesc tiled_ball{Shape::Ball, "wood", 0.1};
+    tiled_ball.finish = Finish::Tiled;
+    BodyDesc tiled_ground{Shape::Ground, "concrete", 4.0};
+    tiled_ground.finish = Finish::Tiled;
+    CHECK(make_body(tiled_ball).mat.name == "wood" && std::string(texture_of(tiled_ball)) == "wood-floor",
+          "finish on a ball was applied");
+    CHECK(make_body(tiled_ground).mat.name == "ceramic" &&
+          std::string(texture_of(tiled_ground)) == "tile-floor", "tiled ground not tiled");
+    Body fw = floor_body("wood-floor");
+    Body dw = make_body({Shape::Panel, "wood", 2.4, 0.022, Mount::BuiltIn});
+    CHECK(same_modes(fw, dw) && dw.fixed, "wood-floor preset != built-in wood panel");
+
+    // size: pitch ~ 1/size (geometric similarity), mass ~ size^3
+    for (Shape s : {Shape::Ball, Shape::Stick, Shape::Box}) {
+        Body a = make_body({s, "metal", 0.2}), b = make_body({s, "metal", 0.4});
+        double fr = a.modes[0].freq / b.modes[0].freq, mr = b.mass / a.mass;
+        double expect_m = s == Shape::Box ? 4.0 : 8.0;   // box wall stays fixed
+        double expect_f = s == Shape::Box ? 4.0 : 2.0;   // box: plate f ~ h / a^2
+        std::printf("  %-5s 20 -> 40 cm: f1 %.0f -> %.0f Hz (x1/%.2f), mass x%.2f\n",
+                    shape_name(s), a.modes[0].freq, b.modes[0].freq, fr, mr);
+        CHECK(std::abs(fr - expect_f) < 1e-6 * expect_f && std::abs(mr - expect_m) < 1e-6 * expect_m,
+              "%s size scaling f x1/%g mass x%g", shape_name(s), fr, mr);
+    }
+    // every shape x material x mount builds and has a positive mass
+    const char* mats[] = {"metal", "glass", "wood", "plastic", "rubber", "stone",
+                          "cardboard", "concrete", "ceramic"};
+    int built = 0;
+    for (int s = 0; s < static_cast<int>(Shape::Count); ++s)
+        for (const char* m : mats)
+            for (int mt = 0; mt < static_cast<int>(Mount::Count); ++mt)
+                for (double sz : {size_min(Shape(s)), 0.3, size_max(Shape(s))}) {
+                    Body b = make_body({Shape(s), m, sz, 0.0, Mount(mt)});
+                    bool ok = b.mass > 0.0;
+                    for (const auto& md : b.modes) ok &= md.decay > 0.0 && md.decay < 2 * kPi * md.freq;
+                    CHECK(ok, "%s %s %s %.2f m: bad body", shape_name(Shape(s)), m,
+                          mount_name(Mount(mt)), sz);
+                    ++built;
+                }
+    std::printf("  %d shape x material x mount x size bodies built\n", built);
+
+    // effective masses
+    Body ball = make_body({Shape::Ball, "wood", 0.10});
+    CHECK(std::abs(pair_effective_mass(ball, ball) - 0.5 * ball.mass) < 1e-12,
+          "two equal free balls: m_eff != M/2");
+    Body slab = make_body({Shape::Ground, "concrete", 4.0});
+    CHECK(pair_effective_mass(ball, slab) == ball.mass && slab.fixed, "ball on slab: m_eff != M");
+    Body stick = make_body({Shape::Stick, "wood", 0.30, 0.012, Mount::Held, 1.0});
+    CHECK(stick.modes.empty() && std::abs(stick.strike_mass - stick.mass / 3.0) < 1e-12,
+          "held stick tip: rigid striker with M/3");
+}
+
+// restitution from the analytic Hunt-Crossley damping vs the target
+static void test_pair_restitution() {
+    const double fs = 48000.0;
+    double worst_flores = 0.0, worst = 0.0;
+    int low = 0, high = 0, ok_pairs = 0;
+    std::printf("  achieved/target restitution, preset objects x floors (Flores alone | pair_mu;\n"
+                "  * modes alone take more than the target, ^ contact damping cannot bring it down):\n");
+    for (int o = 0; o < num_object_presets(); ++o) {
+        Body obj = make_preset_object(o);
+        std::printf("    %-13s", object_preset_name(o));
+        for (int s = 0; s < num_surface_presets(); ++s) {
+            Body flr = floor_body(surface_preset_slug(s));
+            double e = pair_restitution(obj.mat, flr.mat);
+            double k = impact_stiffness(obj, flr);
+            std::vector<Mode> modes = obj.modes;
+            modes.insert(modes.end(), flr.modes.begin(), flr.modes.end());
+            auto r = simulate_impact_implicit(obj.mass, 1.0, k, 1.5, flores_mu(e, 1.0) * k,
+                                              modes, fs);
+            double ef = std::max(0.0, -r.v_out), ep = 0.0;
+            double mu = pair_mu(obj, flr, e, fs, 1.0, &ep);
+            // the most contact damping pair_mu can use
+            double e_lossy = std::max(0.0, -simulate_impact_implicit(
+                obj.mass, 1.0, k, 1.5, flores_mu(0.0, 1.0) * k, modes, fs).v_out);
+            const char* tag = " ";
+            worst_flores = std::max(worst_flores, std::abs(ef - e));
+            if (std::abs(ep - e) > 0.03 && mu == 0.0 && ep < e) { ++low; tag = "*"; }
+            else if (std::abs(ep - e) > 0.03 && e_lossy > e + 0.03) { ++high; tag = "^"; }
+            else { ++ok_pairs; worst = std::max(worst, std::abs(ep - e)); }
+            std::printf("  %.2f|%.2f/%.2f%s", ef, ep, e, tag);
+        }
+        std::printf("\n");
+    }
+    std::printf("  worst |e - e_target| over %d reachable pairs: Flores alone %.3f, pair_mu %.3f;"
+                " %d pairs *, %d pairs ^\n", ok_pairs, worst_flores, worst, low, high);
+    CHECK(worst < 0.03, "pair_mu misses the target restitution by %.3f", worst);
+}
+
+// a stick hits a ball, two equal balls clink: both bodies sound
+static void test_pair_voices() {
+    const double fs = 48000.0;
+    struct Case { const char* name; BodyDesc a, b; };
+    const Case cases[] = {
+        {"held wood stick -> free wood ball 12 cm",
+         {Shape::Stick, "wood", 0.60, 0.0, Mount::Held, 1.0}, {Shape::Ball, "wood", 0.12}},
+        {"glass ball 6 cm -> same glass ball",
+         {Shape::Ball, "glass", 0.06}, {Shape::Ball, "glass", 0.06}},
+        // no audible modes: only the two clicks, which must not cancel
+        {"glass marble 2.5 cm -> same marble",
+         {Shape::Ball, "glass", 0.025}, {Shape::Ball, "glass", 0.025}},
+        {"steel box 30 cm -> concrete slab (drop)",
+         {Shape::Box, "metal", 0.30}, {Shape::Ground, "concrete", 4.0}},
+        {"wood stick -> resting steel box",
+         {Shape::Stick, "wood", 0.60, 0.0, Mount::Held, 1.0},
+         {Shape::Box, "metal", 0.30, 0.0, Mount::Resting}},
+    };
+    for (const Case& c : cases) {
+        auto v = make_pair_voice(c.a, c.b, fs);
+        if (c.b.shape == Shape::Ground) v->drop(2.0); else v->impact(2.0, 0);
+        std::vector<double> ob(static_cast<std::size_t>(fs)), tb(ob.size());
+        v->process_stems(ob.data(), tb.data(), static_cast<int>(ob.size()));
+        double eo = 0, et = 0, em = 0;
+        bool finite = true;
+        for (std::size_t i = 0; i < ob.size(); ++i) {
+            eo += ob[i] * ob[i];
+            et += tb[i] * tb[i];
+            em += (ob[i] + tb[i]) * (ob[i] + tb[i]);
+            finite &= std::isfinite(ob[i]) && std::isfinite(tb[i]);
+        }
+        double lo = 10 * std::log10(eo / ob.size() + 1e-30), lt = 10 * std::log10(et / tb.size() + 1e-30);
+        double lm = 10 * std::log10(em / ob.size() + 1e-30);
+        std::printf("  %-42s contact %.2f ms  object %5.1f  target %5.1f  mix %5.1f dB\n",
+                    c.name, v->last_contact_time() * 1e3, lo, lt, lm);
+        CHECK(finite && eo > 0.0 && et > 0.0, "%s: silent or non-finite stem", c.name);
+        CHECK(lm > std::max(lo, lt) - 20.0, "%s: the stems cancel in the mix", c.name);
+    }
+}
+
+// 1/3-octave band levels (dB) of x from 50 Hz to 16 kHz
+static std::vector<double> third_octaves(const std::vector<double>& x, double fs) {
+    std::size_t n = 1;
+    while (n < x.size()) n <<= 1;
+    std::vector<std::complex<double>> X(n);
+    for (std::size_t i = 0; i < x.size(); ++i) X[i] = x[i];
+    fft(X, false);
+    std::vector<double> out;
+    for (double fc = 50.0; fc < 16000.0; fc *= std::pow(2.0, 1.0 / 3.0)) {
+        double lo = fc * std::pow(2.0, -1.0 / 6.0), hi = fc * std::pow(2.0, 1.0 / 6.0), e = 0.0;
+        for (std::size_t k = static_cast<std::size_t>(lo * n / fs);
+             k <= static_cast<std::size_t>(hi * n / fs) && k < n / 2; ++k)
+            e += std::norm(X[k]);
+        out.push_back(10.0 * std::log10(e + 1e-30));
+    }
+    return out;
+}
+
+// Slab A/B: the full 4 x 4 m concrete plate (all modes to 10 kHz) vs the
+// slab model (modes below a cutoff + forced radiation). Same object, same
+// impact, mix of object + floor. Picks how few slab modes are enough.
+static void test_slab_ab() {
+    const double fs = 48000.0;
+    const std::size_t n = static_cast<std::size_t>(1.2 * fs);
+    Body full = floor_body("concrete-slab");
+    std::printf("  full concrete plate: %zu modes\n", full.modes.size());
+    auto render = [&](const Body& obj, const Body& flr, std::vector<double>& mix,
+                      std::vector<double>& fl) {
+        ContactVoice v;
+        v.prepare(fs, obj, flr);
+        v.set_impact_dissipation(flores_mu(pair_restitution(obj.mat, flr.mat), 1.0), 1.0);
+        v.impact(2.0, 0);
+        std::vector<double> ob(n);
+        fl.assign(n, 0.0);
+        v.process_stems(ob.data(), fl.data(), static_cast<int>(n));
+        mix.resize(n);
+        for (std::size_t i = 0; i < n; ++i) mix[i] = ob[i] + fl[i];
+    };
+    double chosen_worst = 0.0;
+    for (double fmax : {0.0, 2000.0, 4000.0, kSlabModeFmax}) {
+        Body slab = slab_body("concrete", 4.0, 0.15, 0.3, fmax);
+        double worst = 0.0, worst_floor_share = -100.0;
+        for (int o = 0; o < num_object_presets(); ++o) {
+            Body obj = make_preset_object(o);
+            std::vector<double> ma, fa, mb, fb;
+            render(obj, full, ma, fa);
+            render(obj, slab, mb, fb);
+            auto A = third_octaves(ma, fs), B = third_octaves(mb, fs);
+            double top = *std::max_element(A.begin(), A.end());
+            for (std::size_t i = 0; i < A.size(); ++i)
+                if (A[i] > top - 30.0) worst = std::max(worst, std::abs(A[i] - B[i]));
+            double ef = 0, em = 0;
+            for (std::size_t i = 0; i < n; ++i) { ef += fa[i] * fa[i]; em += ma[i] * ma[i]; }
+            worst_floor_share = std::max(worst_floor_share, 10 * std::log10(ef / em + 1e-30));
+        }
+        std::printf("  slab modes < %5.0f Hz: %3zu modes, worst 1/3-oct deviation of the mix "
+                    "%.2f dB (full plate's floor stem <= %.1f dB re mix)\n",
+                    fmax, slab.modes.size(), worst, worst_floor_share);
+        if (fmax == kSlabModeFmax) chosen_worst = worst;
+    }
+    CHECK(chosen_worst < 1.0, "slab model (modes < %.0f Hz) deviates %.2f dB from the full plate",
+          kSlabModeFmax, chosen_worst);
+}
+
 int main() {
     test_fft_and_spline();
     test_decimator_and_click();
@@ -272,6 +501,10 @@ int main() {
     test_slide_box();
     test_drop_sequences();
     test_start_onsets();
+    test_body_desc();
+    test_pair_restitution();
+    test_pair_voices();
+    test_slab_ab();
     std::printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

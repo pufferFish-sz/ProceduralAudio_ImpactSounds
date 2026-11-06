@@ -41,6 +41,13 @@ struct Body {
     Material mat;              // contact material (Hertz)
     std::vector<Mode> modes;
     double mass = 0.0;         // kg
+    // rigid-body effective mass at the contact point (kg): a free stick hit
+    // at its end feels like M/4, a held stick's tip like M/3. 0 -> mass.
+    double strike_mass = 0.0;
+    // distance from the contact point to the body's center (m): where it
+    // radiates from. Two free bodies push the air in opposite directions, so
+    // their rigid-body clicks cancel unless this separation is accounted for.
+    double center_offset = 0.0;
     double area = 0.0;         // m^2, radiating area
     double contact_radius = 0.0;  // m; <= 0 = flat
     bool fixed = false;        // floors: no rigid click

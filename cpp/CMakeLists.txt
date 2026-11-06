@@ -24,6 +24,7 @@ add_library(procaudio_core STATIC
   core/src/sliding.cpp
   core/src/voice.cpp
   core/src/catalog.cpp
+  core/src/body_desc.cpp
   core/src/scenes.cpp)
 target_include_directories(procaudio_core PUBLIC core/include)
 

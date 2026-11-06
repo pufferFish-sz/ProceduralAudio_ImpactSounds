@@ -53,13 +53,15 @@ def _place(F: np.ndarray, pulse: np.ndarray, i0: int) -> None:
 
 def bounce_scene(ball: Body, floor: Body, h0: float, fs: int = FS,
                  tail: float = 1.0, v_min: float = 0.15,
-                 max_bounces: int = 30, t_max: float = 8.0) -> Scene:
+                 max_bounces: int = 30, t_max: float = 8.0,
+                 e_target: float | None = None) -> Scene:
     """Drop `ball` from h0 onto `floor` and let it bounce to rest. Every
-    bounce uses the rebound speed the contact solve actually produced."""
+    bounce uses the rebound speed the contact solve actually produced.
+    e_target: first-bounce restitution (default: RESTITUTION[material])."""
     v = np.sqrt(2 * G * h0)
     t = np.sqrt(2 * h0 / G)
     v0 = v
-    mu0 = calibrate_mu(ball, floor, v0, fs)
+    mu0 = calibrate_mu(ball, floor, v0, fs, e_target)
     hits = []
     while True:
         # mu * v held constant -> (near) constant restitution per bounce, the

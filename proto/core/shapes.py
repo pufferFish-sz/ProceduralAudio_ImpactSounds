@@ -203,13 +203,17 @@ def sphere(radius: float, material: str | dict, l_max: int = 5,
 
 def plate_ss(a: float, b: float, thickness: float, material: str | dict,
              tan_phi: float, x: float = 0.37, y: float = 0.43,
-             f_max: float = 4000.0) -> tuple[list[Mode], float]:
+             f_max: float = 4000.0,
+             load: str = "point") -> tuple[list[Mode], float]:
     """Simply supported rectangular plate a x b (m), struck at (x*a, y*b).
 
     tan_phi here is the INSTALLED loss factor (material + supports + what
     the plate rests on), not the bare material value: a bolted steel deck
     or a slab on soil loses far more energy than a free sample.
-    Returns (modes, mass); coupling mass = M / phi_mn(x, y)^2."""
+    Returns (modes, mass); coupling mass = M / phi_mn(x, y)^2.
+    load="uniform": the force is spread evenly over the whole plate (a box
+    landing on its face): phi is replaced by its plate average,
+    2 * 4 / (m n pi^2) for odd m and n, 0 otherwise (x, y unused)."""
     phys = PHYSICAL[material] if isinstance(material, str) else material
     M = phys["rho"] * a * b * thickness
     D = phys["E"] * thickness**3 / (12 * (1 - phys["nu"]**2))
@@ -222,7 +226,10 @@ def plate_ss(a: float, b: float, thickness: float, material: str | dict,
             f = scale * ((m / a)**2 + (n / b)**2)
             if f > f_max:
                 continue
-            phi2 = (2 * np.sin(m * np.pi * x) * np.sin(n * np.pi * y))**2
+            if load == "uniform":
+                phi2 = (8.0 / (m * n * np.pi**2))**2 if m % 2 and n % 2 else 0.0
+            else:
+                phi2 = (2 * np.sin(m * np.pi * x) * np.sin(n * np.pi * y))**2
             if phi2 < 1e-3:
                 continue
             d = material_damping([f], tan_phi)[0]

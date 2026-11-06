@@ -12,6 +12,7 @@
 #include <atomic>
 #include <memory>
 
+#include "procaudio/body_desc.h"
 #include "procaudio/voice.h"
 
 namespace pa {
@@ -33,5 +34,30 @@ std::unique_ptr<ContactVoice> make_preset_voice(int object, int surface, double 
 bool preset_assets_ready(int object, int surface, double fs);
 // Build every combination's assets, stopping early if *stop becomes true.
 void prewarm_presets(double fs, const std::atomic<bool>* stop = nullptr);
+
+// ---------------------------------------------------------- any pair
+// Voices for any two described bodies (body_desc.h), with the same
+// process-wide cache. Cached per pair: the contact damping (pair_mu). Per
+// ball material x radius step x target texture: the rolling tables. Per
+// target texture: the sliding tables. Bodies themselves are rebuilt each
+// time (analytic, ~ms).
+
+// The old presets as descriptions (Object / Surface lists of plugin v1.2).
+BodyDesc preset_object_desc(int i);
+BodyDesc preset_surface_desc(int i);
+
+// Radius the rolling tables use: the ball radius on a 1/6-octave grid from
+// 1 cm (12 % steps), so a turning Size dial reuses tables. The ball's modes
+// keep the exact size.
+double roll_radius_step(double radius);
+
+// motion = false builds an impact / drop voice only (no roll or slide
+// tables: those take ~0.5 s cold, an impact pair a few ms).
+std::unique_ptr<ContactVoice> make_desc_voice(const BodyDesc& object, const BodyDesc& target,
+                                              double fs, bool motion = true);
+bool desc_assets_ready(const BodyDesc& object, const BodyDesc& target, double fs,
+                       bool motion = true);
+// Every preset object x preset surface as descriptions (the plugin's start).
+void prewarm_desc_presets(double fs, const std::atomic<bool>* stop = nullptr);
 
 }  // namespace pa
