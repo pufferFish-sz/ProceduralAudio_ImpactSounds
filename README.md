@@ -122,6 +122,8 @@ normalized on its own).
 ## Layout
 
 ```
+cpp/          C++ core (impact, rolling, sliding), FMOD plugin, golden tests
+              against proto/ -- see cpp/README.md
 proto/
   core/       modal_bank, materials (tan_phi + E/rho/nu) [ref2], shapes
               (analytic bar/rod/pipe/disc), impact [ref1] (+ Hertz k),
@@ -142,6 +144,7 @@ proto/
               sliding_sound_literature.md (sliding models, diagnosis)
               rolling_sliding_vs_recordings.md (recordings analysis,
               rolling model, slide fixes, render-vs-real numbers)
+              cpp_plugin_design.md (C++ core + FMOD/Wwise plugin design)
   recordings/ put real reference recordings here (see its README)
 ```
 

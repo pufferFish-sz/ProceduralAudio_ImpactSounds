@@ -29,8 +29,8 @@ import numpy as np
 from .contact import force_at_rate
 from .impact import hertz_stiffness, simulate_impact
 from .modal_bank import ModalBank, Mode
-from .radiation import (accel_to_pressure, coincidence_freq, sigma_of,
-                        velocity_to_pressure)
+from .radiation import (C_AIR, R_LISTEN, RHO_AIR, accel_to_pressure, coincidence_freq,
+                        sigma_of, velocity_to_pressure)
 from .materials import PHYSICAL
 from .shapes import bar, plate_ss, sphere
 
@@ -96,6 +96,13 @@ def calibrate_mu(mover: Body, target: Body, v_in: float, fs: int,
     return brentq(err, lo, hi, xtol=1e-4)
 
 
+def mode_sign(i: int) -> float:
+    """Fixed pseudo-random +-1 for mode i (Knuth multiplicative hash, top
+    bit). The same rule is in the C++ core (bodies.cpp), so both radiate
+    each mode with the same sign."""
+    return -1.0 if ((i * 2654435761) & 0xFFFFFFFF) >> 31 else 1.0
+
+
 def body_sound(body: Body, force: np.ndarray, fs: int, sign: float) -> dict:
     """Radiated pressure (Pa @ 1 m) of one body driven by a force timeline.
 
@@ -104,17 +111,39 @@ def body_sound(body: Body, force: np.ndarray, fs: int, sign: float) -> dict:
     rho c sqrt(sigma(f_n) S / 2 pi) / r -- folded into the modal output gains.
     Click (free bodies only): rigid-body acceleration -/+ f/M through the
     same sigma(f) (core/radiation.py).
-    sign: +1 if the force pushes the body along +, -1 for the mover."""
+    sign: +1 if the force pushes the body along +, -1 for the mover.
+
+    Two corrections (2026-11-06, energy bookkeeping of an impact):
+    - Each mode reaches the listener with its OWN sign (mode_sign): a mode's
+      far field has its own radiation pattern, so at a given listener
+      position some modes arrive inverted. Adding every mode with the same
+      sign made the radiated energy the square of the amplitude sum instead
+      of the sum of modal powers: a 2 m/s steel ball on the wooden floor
+      radiated 42 % of the floor's vibration energy, more than any mode can
+      (sigma and loss allow <= 27 %), and the first instant after a hit
+      added up coherently (+12 dB peak).
+    - Radiation damping: a mode radiating W = rho c S sigma <v^2> loses its
+      energy E = M <v^2> at that rate, i.e. decay += rho c sigma S / (2 M)
+      (radiation loss factor rho c sigma / (rho_s omega)).
+    - Plates (floors, box panels) add their FORCED radiation, coherent with
+      the force: around a point force the plate's net volume acceleration is
+      F / rho_s (momentum), a baffled monopole p = rho_0 F / (2 pi r rho_s)
+      (Cremer & Heckl, Structure-Borne Sound, point-excited plate below
+      coincidence), low-passed at the coincidence frequency, above which the
+      resonant radiation (sigma ~ 1) takes over. The old in-phase mode sum
+      was crudely standing in for this term."""
     out = {"modes": np.zeros(len(force)), "click": np.zeros(len(force))}
     if body.modes:
         f_n = np.array([m.freq for m in body.modes])
-        w = velocity_to_pressure(sigma_of(body.radiator, body.area, f_n),
-                                 body.area)
-        weighted = [Mode(freq=m.freq, decay=m.decay, mass=m.mass,
-                         gain=float(wn * np.sqrt(m.mass / body.mass)))
-                    for m, wn in zip(body.modes, w)]
+        sig = sigma_of(body.radiator, body.area, f_n)
+        w = velocity_to_pressure(sig, body.area)
+        d_rad = RHO_AIR * C_AIR * sig * body.area / (2.0 * body.mass)
+        weighted = [Mode(freq=m.freq, decay=m.decay + float(dr), mass=m.mass,
+                         gain=float(mode_sign(i) * wn * np.sqrt(m.mass / body.mass)))
+                    for i, (m, wn, dr) in enumerate(zip(body.modes, w, d_rad))]
         y = ModalBank(weighted, fs).process(force)
         out["modes"] = np.diff(y, prepend=0.0) * fs      # displacement -> velocity
+    out["forced"] = forced_radiation(body, force, fs, sign)
     if not body.fixed:
         # rigid-body motion of the WHOLE object radiates as a compact dipole
         # even when its bending modes radiate like a plate: Maidanik's plate
@@ -122,8 +151,22 @@ def body_sound(body: Body, force: np.ndarray, fs: int, sign: float) -> dict:
         # of accel_to_pressure it blows up near DC (a free 0.2 kg box)
         out["click"] = accel_to_pressure(sign * force / body.mass, fs,
                                          {"kind": "compact"}, body.area)
-    out["mix"] = out["modes"] + out["click"]
+    out["mix"] = out["modes"] + out["click"] + out["forced"]
     return out
+
+
+def forced_radiation(body: Body, force: np.ndarray, fs: int, sign: float) -> np.ndarray:
+    """Forced (drive-point) radiation of a plate body, see body_sound:
+    p = rho_0 F / (2 pi r rho_s), 2nd-order Butterworth low-pass at the
+    coincidence frequency. Zero for non-plate bodies."""
+    r = body.radiator
+    if r.get("kind") != "plate":
+        return np.zeros(len(force))
+    from scipy.signal import butter, sosfilt
+    rho_s = r["phys"]["rho"] * r["h"]
+    fc = min(coincidence_freq(r["h"], r["phys"]), 0.45 * fs)
+    sos = butter(2, fc, fs=fs, output="sos")
+    return sign * RHO_AIR / (2 * np.pi * R_LISTEN * rho_s) * sosfilt(sos, force)
 
 
 def with_contact_damping(body: Body, loss: float, why: str) -> Body:

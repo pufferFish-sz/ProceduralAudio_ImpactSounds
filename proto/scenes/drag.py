@@ -94,8 +94,13 @@ def steady_pull(seed: int = 0) -> np.ndarray:
     from scipy.signal import butter, sosfiltfilt
     rng = np.random.default_rng(seed)
     t = np.arange(int(PULL_DUR * FS)) / FS
+    # 2 s of padding each side: sosfiltfilt's start-up transient (~ one raw
+    # noise sample, decaying over ~0.5 s) is ~80x the filtered noise, and
+    # normalizing by a std that includes it left only +-1.2 % variation
+    # (found by the C++ golden test, 2026-10-28)
+    pad = 2 * FS
     w = sosfiltfilt(butter(2, 1.5, fs=FS, output="sos"),
-                    rng.standard_normal(len(t)))
+                    rng.standard_normal(len(t) + 2 * pad))[pad:-pad]
     w /= np.std(w) or 1.0
     t0, t1 = 0.1, PULL_DUR - 0.4
     up = np.clip((t - t0) / PULL_RAMP, 0.0, 1.0)

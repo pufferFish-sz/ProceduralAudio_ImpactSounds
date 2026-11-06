@@ -15,7 +15,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - contact stiffness k = 4.01e+07 N/m^1.5 (Hertz, wood edge r = 3 mm on wood)
 - contact points vary along the length (5-95 %), so each hit colours the same modes differently
 - impulse check: max error 0.00 % vs m (v_in + v_out)
-- Energy share: wood-block-20x5x2cm 0 %, wood-floor 100 %
+- Energy share: wood-block-20x5x2cm 1 %, wood-floor 99 %
 - Note: simply supported plate; radiates per Maidanik, coincidence 684 Hz (inefficient below)
 
 ## `tumble_wood-block-20x5x2cm_thrown-3mps_onto_concrete-slab.wav`
@@ -28,7 +28,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - contact stiffness k = 7.75e+07 N/m^1.5 (Hertz, wood edge r = 3 mm on concrete)
 - contact points vary along the length (5-95 %), so each hit colours the same modes differently
 - impulse check: max error 0.00 % vs m (v_in + v_out)
-- Energy share: wood-block-20x5x2cm 95 %, concrete-slab 5 %
+- Energy share: wood-block-20x5x2cm 96 %, concrete-slab 4 %
 - Note: simply supported plate; radiates per Maidanik, coincidence 120 Hz (inefficient below)
 
 ## `tumble_steel-bar-20x5x2cm_thrown-3mps_onto_concrete-slab.wav`
@@ -41,5 +41,5 @@ Stems in `stems/` are each sound source on its own (same gain).
 - contact stiffness k = 2.00e+09 N/m^1.5 (Hertz, metal edge r = 3 mm on concrete)
 - contact points vary along the length (5-95 %), so each hit colours the same modes differently
 - impulse check: max error 0.00 % vs m (v_in + v_out)
-- Energy share: steel-bar-20x5x2cm 41 %, concrete-slab 59 %
+- Energy share: steel-bar-20x5x2cm 46 %, concrete-slab 54 %
 - Note: simply supported plate; radiates per Maidanik, coincidence 120 Hz (inefficient below)

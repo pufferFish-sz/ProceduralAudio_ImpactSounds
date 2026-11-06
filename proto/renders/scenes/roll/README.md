@@ -15,7 +15,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - surface: sanded boards, grain ~1.7 mm, a groove between 12 cm boards, a little household grit
 - contact: Hertz point law, k = 2.87e+07, alpha 1.5; static penetration 13.490 um, contact resonance 166 Hz, damping ratio 0.22 (micro-landing restitution 0.49); random roughness seen 6.0 um rms
 - airborne 15.0% of the time, 44 landings/s, revolution rate 2.42 Hz
-- vs recording (render vs real): centroid Hz 152 vs 223; <300 Hz share 0.87 vs 0.96; level sd dB 3.5 vs 4.5; >1k kurtosis 38 vs 301; clicks/s 60 vs 57; mod peak Hz 4.9 vs 4.9; mod depth dB 23 vs 11; narrow peaks 0 vs 0; LTAS shape distance 12.9 dB (above 300 Hz: 14.0 dB)
+- vs recording (render vs real): centroid Hz 146 vs 223; <300 Hz share 0.97 vs 0.96; level sd dB 3.4 vs 4.5; >1k kurtosis 11 vs 301; clicks/s 20 vs 57; mod peak Hz 4.7 vs 4.9; mod depth dB 23 vs 11; narrow peaks 2 vs 0; LTAS shape distance 16.5 dB (above 300 Hz: 17.3 dB)
 - Energy share: baseball-r37mm 0 %, wood-floor 100 %
 - Note: two raised seam crossings per revolution (0.12 mm, 6 mm wide) + 30 um lumpiness
 - Note: stitches: 12 ridges (40 um, 1.5 mm) around each seam crossing where the track runs along the stitched seam -- count set to the recording's ~57 clicks/s
@@ -32,8 +32,8 @@ Stems in `stems/` are each sound source on its own (same gain).
 - surface: sanded boards, grain ~1.7 mm, a groove between 12 cm boards, a little household grit
 - contact: Hertz line law, k = 1.04e+08, alpha 1.0; static penetration 0.035 um, contact resonance 2666 Hz, damping ratio 0.22 (micro-landing restitution 0.49); random roughness seen 0.5 um rms (averaged along the line contact)
 - airborne 5.1% of the time, 51 landings/s, revolution rate 1.77 Hz
-- vs recording (render vs real): centroid Hz 779 vs 199; <300 Hz share 0.04 vs 0.96; level sd dB 6.1 vs 4.1; >1k kurtosis 184 vs 25; clicks/s 72 vs 6; mod peak Hz 12.9 vs 1.8; mod depth dB 11 vs 18; narrow peaks 1 vs 0; LTAS shape distance 12.9 dB (above 300 Hz: 7.9 dB)
-- Energy share: soda-can-full 0 %, wood-floor 100 %
+- vs recording (render vs real): centroid Hz 332 vs 199; <300 Hz share 0.20 vs 0.96; level sd dB 5.0 vs 4.1; >1k kurtosis 48 vs 25; clicks/s 39 vs 6; mod peak Hz 2.1 vs 1.8; mod depth dB 16 vs 18; narrow peaks 6 vs 0; LTAS shape distance 14.1 dB (above 300 Hz: 13.8 dB)
+- Energy share: soda-can-full 1 %, wood-floor 99 %
 - Note: shell ring modes, mass-loaded and damped by the liquid (modal mass x full/empty, tan phi 0.03)
 - Note: rim: 50 um eccentricity + one 0.5 mm, 6 mm wide dent (a used can; sized so the can just lifts off once per revolution, the recording's 17 dB swell)
 - Note: painted aluminium: 1 um rms surface texture
@@ -49,7 +49,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - surface: cut-pile rug: tufts ~3 mm, very soft and lossy
 - contact: Hertz line law, k = 2.11e+04, alpha 1.0; static penetration 172.359 um, contact resonance 38 Hz, damping ratio 0.59 (micro-landing restitution 0.10); random roughness seen 23.5 um rms (averaged along the line contact)
 - airborne 0.0% of the time, 0 landings/s, revolution rate 2.97 Hz
-- vs recording (render vs real): centroid Hz 38 vs 185; <300 Hz share 1.00 vs 0.97; level sd dB 4.0 vs 4.3; >1k kurtosis 764 vs 13; clicks/s 1 vs 4; mod peak Hz 3.0 vs 3.0; mod depth dB 22 vs 16; narrow peaks 0 vs 0; LTAS shape distance 7.4 dB (above 300 Hz: 4.1 dB)
+- vs recording (render vs real): centroid Hz 39 vs 185; <300 Hz share 1.00 vs 0.97; level sd dB 4.3 vs 4.3; >1k kurtosis 576 vs 13; clicks/s 1 vs 4; mod peak Hz 3.0 vs 3.0; mod depth dB 20 vs 16; narrow peaks 0 vs 0; LTAS shape distance 7.0 dB (above 300 Hz: 4.2 dB)
 - Energy share: soda-can-full 0 %, rug 100 %
 - Note: shell ring modes, mass-loaded and damped by the liquid (modal mass x full/empty, tan phi 0.03)
 - Note: rim: 50 um eccentricity + one 0.5 mm, 6 mm wide dent (a used can; sized so the can just lifts off once per revolution, the recording's 17 dB swell)
@@ -66,8 +66,8 @@ Stems in `stems/` are each sound source on its own (same gain).
 - surface: glazed ceramic tiles, 30 cm grid, 4 mm grout lines 1.2 mm deep, a little grit
 - contact: Hertz line law, k = 1.94e+09, alpha 1.0; static penetration 0.000 um, contact resonance 46229 Hz (solved softened to 35280 Hz, still above hearing), damping ratio 0.16 (micro-landing restitution 0.60); random roughness seen 0.1 um rms (averaged along the line contact)
 - airborne 0.2% of the time, 0 landings/s, revolution rate 3.08 Hz
-- vs recording (render vs real): centroid Hz 1077 vs 576; <300 Hz share 0.37 vs 0.32; level sd dB 3.3 vs 3.5; >1k kurtosis 1310 vs 607; clicks/s 28 vs 22; mod peak Hz nan vs 3.2; mod depth dB nan vs 13; narrow peaks 0 vs 0; LTAS shape distance 5.7 dB (above 300 Hz: 6.2 dB)
-- Energy share: aa-battery 37 %, tile-floor 63 %
+- vs recording (render vs real): centroid Hz 1363 vs 576; <300 Hz share 0.34 vs 0.32; level sd dB 3.0 vs 3.5; >1k kurtosis 1010 vs 607; clicks/s 24 vs 22; mod peak Hz nan vs 3.2; mod depth dB nan vs 13; narrow peaks 0 vs 0; LTAS shape distance 6.4 dB (above 300 Hz: 7.0 dB)
+- Energy share: aa-battery 54 %, tile-floor 46 %
 - Note: no audible modes (all above 16 kHz): you hear its rigid click and the floor
 - Note: rim: 10 um eccentricity + a 30 um label seam
 - Note: plastic label: 2 um rms surface texture
@@ -83,7 +83,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - surface: glazed ceramic tiles, 30 cm grid, 4 mm grout lines 1.2 mm deep, a little grit
 - contact: Hertz line law, k = 1.94e+09, alpha 1.0; static penetration 0.000 um, contact resonance 46229 Hz (solved softened to 35280 Hz, still above hearing), damping ratio 0.16 (micro-landing restitution 0.60); random roughness seen 0.1 um rms (averaged along the line contact)
 - airborne 0.2% of the time, 0 landings/s, revolution rate 3.08 Hz
-- vs recording (render vs real): centroid Hz 944 vs 576; <300 Hz share 0.07 vs 0.32; level sd dB 3.7 vs 3.5; >1k kurtosis 686 vs 607; clicks/s 38 vs 22; mod peak Hz nan vs 3.2; mod depth dB nan vs 13; narrow peaks 0 vs 0; LTAS shape distance 7.8 dB (above 300 Hz: 7.9 dB)
+- vs recording (render vs real): centroid Hz 780 vs 576; <300 Hz share 0.27 vs 0.32; level sd dB 3.4 vs 3.5; >1k kurtosis 166 vs 607; clicks/s 6 vs 22; mod peak Hz 1.7 vs 3.2; mod depth dB 14 vs 13; narrow peaks 6 vs 0; LTAS shape distance 10.7 dB (above 300 Hz: 11.9 dB)
 - Energy share: aa-battery 0 %, tile-on-timber 100 %
 - Note: no audible modes (all above 16 kHz): you hear its rigid click and the floor
 - Note: rim: 10 um eccentricity + a 30 um label seam

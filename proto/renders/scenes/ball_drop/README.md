@@ -15,7 +15,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - contact stiffness k = 2.15e+06 N/m^1.5 (Hertz, rubber on concrete); first contact 1.45 ms
 - restitution 0.80 on the first bounce (calibrated, mu * v = 0.469), 0.77 on the last
 - impulse check: max error 0.00 % vs m (v_in + v_out)
-- Energy share: rubber-ball-small-r15mm 76 %, concrete-slab 24 %
+- Energy share: rubber-ball-small-r15mm 41 %, concrete-slab 59 %
 - Note: solid, not air-filled: a hollow playground ball adds an air-cavity resonance this model does not have
 - Note: simply supported plate; radiates per Maidanik, coincidence 120 Hz (inefficient below)
 
@@ -43,7 +43,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - contact stiffness k = 2.15e+06 N/m^1.5 (Hertz, rubber on metal); first contact 1.45 ms
 - restitution 0.80 on the first bounce (calibrated, mu * v = 0.432), 0.78 on the last
 - impulse check: max error 0.00 % vs m (v_in + v_out)
-- Energy share: rubber-ball-small-r15mm 1 %, steel-plate-floor 99 %
+- Energy share: rubber-ball-small-r15mm 0 %, steel-plate-floor 100 %
 - Note: solid, not air-filled: a hollow playground ball adds an air-cavity resonance this model does not have
 - Note: simply supported plate; radiates per Maidanik, coincidence 2050 Hz (inefficient below)
 
@@ -57,7 +57,7 @@ Stems in `stems/` are each sound source on its own (same gain).
 - contact stiffness k = 3.51e+06 N/m^1.5 (Hertz, rubber on concrete); first contact 3.86 ms
 - restitution 0.80 on the first bounce (calibrated, mu * v = 0.467), 0.77 on the last
 - impulse check: max error 0.00 % vs m (v_in + v_out)
-- Energy share: rubber-ball-large-r40mm 25 %, concrete-slab 75 %
+- Energy share: rubber-ball-large-r40mm 6 %, concrete-slab 94 %
 - Note: solid, not air-filled: a hollow playground ball adds an air-cavity resonance this model does not have
 - Note: simply supported plate; radiates per Maidanik, coincidence 120 Hz (inefficient below)
 

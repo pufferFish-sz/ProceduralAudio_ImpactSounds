@@ -445,3 +445,59 @@ that artefact.
 
 The real metal box's 4–16 kHz "air" still needs a real source. A
 tangential (friction) force component is the main candidate.
+
+## 12. Impacts were too loud: the radiation model (2026-11-06)
+
+**Symptom.** In FMOD a 2 m/s impact of the large steel ball peaked about
+50 dB over full scale at the plug-in's old calibration. It needed a −45 dB
+"Impact trim".
+
+**The energy bookkeeping of that impact** (Python reference,
+`bodies.body_sound`):
+- The ball loses 1.65 J. The floor takes up 1.56 J of vibration.
+- The old model radiated 0.66 J of sound: 42 % of the floor's vibration.
+- No floor mode can radiate that much. From its radiation efficiency σ and
+  loss factor, the radiation loss factor ρc·σ/(ρs·ω) allows at most ~27 %
+  (at 1 kHz).
+
+**Cause.** Every mode was added at the listener with the same sign. The
+radiated energy was then the square of an amplitude sum instead of the sum
+of the modal powers, and the instant after a hit added up coherently.
+
+**Fix, in Python and C++ (the same rule in both):**
+1. **Each mode with its own sign at the listener.** `mode_sign(i)`: a fixed
+   pseudo-random ±1 from the Knuth multiplicative hash of the mode index,
+   standing in for each mode's radiation pattern at an unknown listener
+   position. Energy is now the sum of modal powers.
+2. **Radiation damping.** decay += ρc·σ·S/(2M): a mode loses the energy it
+   radiates.
+3. **Forced radiation of plates** (floors, box panels). Around a point force
+   the plate's net volume acceleration is F/ρs, a baffled monopole
+   p = ρ₀·F/(2π·r·ρs) (Cremer & Heckl, point-excited plate below
+   coincidence), low-passed at the coincidence frequency. The old in-phase
+   sum had been standing in for this coherent term. Without it, power
+   summation alone halved the brightness of the box drags (centroid
+   1000 → 450 Hz).
+
+**Result.**
+- Impact peak: 204 → 56 Pa (140 → 129 dB SPL at 1 m).
+- Radiated sound: 12 % of the floor's vibration energy.
+- Rolling: −0.3 to −6 dB. The box drags keep their brightness (cardboard
+  centroid 572 → 548 Hz); the steel box comes out +6 dB, as its forced
+  radiation is strong.
+- C++ matches the updated Python: 18/18 golden checks. Sparse-event roll
+  scenes have an 8 dB tolerance, after measuring a Python-vs-Python seed
+  spread of up to 4.8 dB.
+
+**The remaining impact-vs-rolling gap (~50 dB) is physical.** Hammer blows
+on a floor peak around 120–135 dB at 1 m. So the plug-in is now calibrated
+0 dBFS = 63 Pa, and roll / slide events raise Level (deck presets +35 / +50
+dB). There is no impact-only trim any more.
+
+**Cost: recording matches.**
+- Several LTAS distances to the reference recordings got worse:
+  - baseball 12.9 → 16.5 dB;
+  - plank drag 8.2 → 10.7 dB;
+  - steel-box drag 12.2 → 14.1 dB.
+- The earlier presets (contact sizes, contact loss) were tuned with the old
+  in-phase sum. They need re-fitting against the recordings.

@@ -238,6 +238,9 @@ Proposed designer macro → physics mapping (to validate with 2–3 designers):
 ## Part 3 — Implementation and builds
 
 ### 3.0 Prerequisite: a C++ core shared by every target
+> Detailed design for impact + sliding + rolling, updated for the current
+> models: [`cpp_plugin_design.md`](cpp_plugin_design.md).
+
 Before any engine work, port the DSP to **one engine-agnostic C++ library**
 (no FMOD/Wwise headers): modal bank (complex one-pole per mode, SIMD-able),
 implicit Hunt–Crossley with 2–3 Newton iterations, friction, aggregate
