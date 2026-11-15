@@ -492,6 +492,58 @@ static void test_slab_ab() {
           kSlabModeFmax, chosen_worst);
 }
 
+// what makes sense: a held ball slides instead of rolling, a box cannot
+// roll, nothing rolls on a free ball in mid-air, a held stick cannot fall
+static void test_action_rules() {
+    BodyDesc ball{Shape::Ball, "wood", 0.1}, held_ball = ball, box{Shape::Box, "metal", 0.3};
+    held_ball.mount = Mount::Held;
+    BodyDesc floor{Shape::Ground, "concrete", 4.0}, free_ball{Shape::Ball, "glass", 0.06};
+    BodyDesc stick{Shape::Stick, "wood", 0.6, 0.0, Mount::Held};
+    BodyDesc resting_ball = ball, fixed_box = box, resting_box = box, tray = box, held_box = box;
+    resting_ball.mount = Mount::Resting;
+    fixed_box.mount = Mount::BuiltIn;
+    resting_box.mount = Mount::Resting;
+    tray.shape = Shape::Panel; tray.mount = Mount::Held;
+    held_box.mount = Mount::Held;
+    BodyDesc fixed_stick = stick, ground_obj{Shape::Ground, "concrete", 4.0};
+    fixed_stick.mount = Mount::BuiltIn;
+    struct Case { const BodyDesc *o, *t; Action want, expect; const char* what; };
+    const Case cases[] = {
+        {&ball, &floor, Action::Roll, Action::Roll, "free ball rolls on the ground"},
+        {&ball, &floor, Action::Slide, Action::Roll, "free ball cannot slide: it rolls"},
+        {&resting_ball, &floor, Action::Roll, Action::Roll, "a pushed resting ball rolls"},
+        {&resting_ball, &floor, Action::Slide, Action::Roll, "resting ball rolls, not slides"},
+        {&held_ball, &floor, Action::Roll, Action::Slide, "held ball can't turn: slides"},
+        {&held_ball, &floor, Action::Slide, Action::Slide, "held ball scrapes"},
+        {&box, &floor, Action::Roll, Action::Slide, "box slides instead of rolling"},
+        {&box, &floor, Action::Slide, Action::Slide, "free box slides"},
+        {&resting_box, &floor, Action::Slide, Action::Slide, "pushed resting box slides"},
+        {&ball, &free_ball, Action::Roll, Action::None, "no rolling on a free ball"},
+        {&ball, &fixed_box, Action::Roll, Action::Roll, "ball rolls on a built-in box"},
+        {&ball, &tray, Action::Roll, Action::Roll, "ball rolls on a held tray"},
+        {&ball, &free_ball, Action::Slide, Action::None, "a free ball rolls, nothing to roll on"},
+        {&stick, &fixed_stick, Action::Slide, Action::Slide, "held stick scrapes a fixed rail"},
+        {&stick, &free_ball, Action::Slide, Action::None, "a free target would fly off"},
+        {&box, &fixed_stick, Action::Slide, Action::None, "a free box cannot lie on a stick"},
+        {&ball, &floor, Action::Drop, Action::Drop, "free ball drops"},
+        {&ball, &tray, Action::Drop, Action::Drop, "free ball drops onto a held tray"},
+        {&ball, &free_ball, Action::Drop, Action::Impact, "nothing flat to land on: hit"},
+        {&stick, &free_ball, Action::Drop, Action::Impact, "held stick hits instead"},
+        {&resting_box, &floor, Action::Drop, Action::None, "a resting box neither falls nor hits"},
+        {&stick, &free_ball, Action::Impact, Action::Impact, "a held stick hits a free ball"},
+        {&held_box, &held_box, Action::Impact, Action::Impact, "two held boxes knock"},
+        {&resting_box, &floor, Action::Impact, Action::None, "nothing moves: both at rest"},
+        {&ground_obj, &fixed_box, Action::Impact, Action::None, "two fixed bodies never meet"},
+        {&ground_obj, &ball, Action::Impact, Action::Impact, "a ball falls onto the ground (roles swapped)"},
+        {&ground_obj, &floor, Action::Slide, Action::None, "the ground cannot slide"},
+    };
+    for (const Case& c : cases) {
+        ActionCheck r = check_action(*c.o, *c.t, c.want);
+        CHECK(r.use == c.expect && (r.use == c.want) == (r.reason[0] == '\0'),
+              "%s: got %s (%s)", c.what, action_name(r.use), r.reason);
+    }
+}
+
 int main() {
     test_fft_and_spline();
     test_decimator_and_click();
@@ -505,6 +557,7 @@ int main() {
     test_pair_restitution();
     test_pair_voices();
     test_slab_ab();
+    test_action_rules();
     std::printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

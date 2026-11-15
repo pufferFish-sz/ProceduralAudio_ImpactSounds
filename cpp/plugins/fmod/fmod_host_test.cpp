@@ -27,11 +27,11 @@
         }                                                                          \
     } while (0)
 
-// plug-in v2.2 parameter indices (procaudio_fmod.cpp)
+// plug-in v2.4 parameter indices (procaudio_fmod.cpp)
 enum {
     P_O_SHAPE, P_O_MATERIAL, P_O_MOUNT, P_O_SIZE, P_O_THICK, P_O_HIT,
     P_T_SHAPE, P_T_MATERIAL, P_T_FINISH, P_T_MOUNT, P_T_SIZE, P_T_THICK, P_T_HIT,
-    P_MOTION, P_SPEED, P_RENDER, P_LEVEL
+    P_MOTION, P_SPEED, P_RENDER, P_LEVEL, P_CONTACTS, P_FIT
 };
 enum { M_IMPACT, M_DROP, M_ROLL, M_SLIDE };
 enum { BALL, STICK, BOX, PANEL, GROUND };
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
         return 0;
     };
     // let the background prewarm finish (Studio does this at start-up)
-    std::this_thread::sleep_for(std::chrono::seconds(14));
+    std::this_thread::sleep_for(std::chrono::seconds(20));   // prewarm: ~18 s
     std::printf("plug-in loaded %.1f s ago (prewarm running in the background)\n",
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count());
 
@@ -187,6 +187,49 @@ int main(int argc, char** argv) {
     if (render("size_swap", 0.3)) return 1;                       // ringing ...
     CHECK(dsp->setParameterFloat(P_O_SIZE, 0.031f));              // ... while the body changes
     if (render("size_swap_after", 1.2)) return 1;
+    // v2.3: a held ball asked to Roll slides instead, and the Speed label says why
+    const Settings held_ball{{{P_O_MOUNT, HELD}}, {}};
+    if (play(held_ball, M_ROLL, 0.5f, 0.0f, &ms)) return 1;
+    // it slides, so the Slide preset's Level applies (play() set Roll's +35).
+    // A smooth ball on a varnished floor is very quiet since the slide
+    // surface fix (design doc Part 12): no more groove and grit clicks.
+    CHECK(dsp->setParameterFloat(P_LEVEL, 50.0f));
+    {
+        float v = 0.0f;
+        char str[32] = "";
+        CHECK(dsp->getParameterFloat(P_SPEED, &v, str, sizeof(str)));
+        std::printf("    label Speed (held ball, Roll) -> \"%s\"\n", str);
+    }
+    if (render("held_roll", 2.0, true)) return 1;   // real time: a cold pair (held ball)
+    // v2.4: Fit Length. The steel-ball hit (as ring_ref) fitted to 0.15 s:
+    // unchanged at first, then a fade to true silence 1 ms before 0.15 s
+    Settings fit_hit = deflt;
+    fit_hit.floats.push_back({P_FIT, 0.15f});
+    if (play(fit_hit, M_IMPACT, 0.0f, 2.0f, &ms)) return 1;
+    {
+        float v = 0.0f;
+        char str[32] = "";
+        CHECK(dsp->getParameterFloat(P_FIT, &v, str, sizeof(str)));
+        std::printf("    label Fit Length = %.3g -> \"%s\"\n", v, str);
+    }
+    if (render("fit_hit", 0.6)) return 1;
+    {   // the instrument stops itself (silence) once past its Fit Length
+        bool playing = true;
+        ch->isPlaying(&playing);
+        std::printf("    fit_hit: channel %s after 0.6 s\n", playing ? "still playing" : "ended");
+    }
+    Settings fit_roll = deflt;                                     // a roll fitted to 0.4 s
+    fit_roll.floats.push_back({P_FIT, 0.4f});
+    if (play(fit_roll, M_ROLL, 0.5f, 0.0f, &ms)) return 1;
+    if (render("fit_roll", 1.0)) return 1;
+    // v2.3: a long metal ring must not be cut after 3 s (a 1 m free steel
+    // stick dropped on the ground rings for several seconds)
+    Settings long_ring = concrete;
+    long_ring.ints.push_back({P_O_SHAPE, STICK});
+    long_ring.ints.push_back({P_O_MATERIAL, METAL});
+    long_ring.floats.push_back({P_O_SIZE, 1.0f});
+    if (play(long_ring, M_IMPACT, 0.0f, 2.0f, &ms)) return 1;
+    if (render("long_ring", 6.0, true)) return 1;   // real time: the voice is a cold pair
 
     // teardown: stop, let the mixer drop the DSP, release it, then the system
     CHECK(ch->stop());

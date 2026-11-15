@@ -284,6 +284,12 @@ Body make_body(const BodyDesc& d) {
         case Shape::Box: b.center_offset = 0.5 * b.box_c; break;
         default: b.center_offset = 0.5 * h; break;
     }
+    // forced radiation: only where the panel bends (above its lowest mode)
+    if (b.rad.plate && !b.modes.empty()) {
+        double f1 = b.modes.front().freq;
+        for (const Mode& m : b.modes) f1 = std::min(f1, m.freq);
+        b.rad.forced_fmin = f1;
+    }
     if (d.shape != Shape::Ground) apply_mount(b, d);
     if (floor_finish(d) == Finish::Tiled || floor_finish(d) == Finish::Carpeted) {
         b.mat = material(contact_material(d));   // touched through the covering
@@ -358,6 +364,86 @@ std::unique_ptr<ContactVoice> make_pair_voice(const BodyDesc& object, const Body
     v->set_impact_dissipation(pair_mu(o, t, e, fs), 1.0);
     v->set_restitution(e);
     return v;
+}
+
+// ---------------------------------------------------------- what makes sense
+
+const char* action_name(Action a) {
+    static const char* n[] = {"Impact", "Drop", "Roll", "Slide", "None"};
+    int i = static_cast<int>(a);
+    return (i >= 0 && i < static_cast<int>(Action::Count)) ? n[i] : "?";
+}
+
+// The mount that applies: Ground is always Built-in.
+static Mount mount_of(const BodyDesc& d) {
+    return d.shape == Shape::Ground ? Mount::BuiltIn : d.mount;
+}
+// Moves on its own or by hand (Resting and Built-in bodies only sit there).
+static bool moving(const BodyDesc& d) {
+    const Mount m = mount_of(d);
+    return m == Mount::Free || m == Mount::Held;
+}
+// Can be moved at all (Built-in bodies cannot; a Resting box can be pushed).
+static bool movable(const BodyDesc& d) { return mount_of(d) != Mount::BuiltIn; }
+// Free to turn: a ball that is not gripped or fixed.
+static bool turns(const BodyDesc& d) {
+    const Mount m = mount_of(d);
+    return d.shape == Shape::Ball && (m == Mount::Free || m == Mount::Resting);
+}
+// Holds still against a scrape: anything not flying free.
+static bool steady(const BodyDesc& d) { return mount_of(d) != Mount::Free; }
+
+bool target_supports(const BodyDesc& t) {
+    // a flat top (Box, Panel, Ground) that holds still: on the ground, built
+    // in, resting on something, or held level (a tray)
+    const bool flat = t.shape == Shape::Box || t.shape == Shape::Panel || t.shape == Shape::Ground;
+    return flat && steady(t);
+}
+
+// Each motion's own test: "" when it can happen, else why not.
+static const char* why_not(const BodyDesc& o, const BodyDesc& t, Action a) {
+    const bool support = target_supports(t);
+    switch (a) {
+        case Action::Impact:
+            if (!moving(o) && !moving(t)) return "nothing moves: both at rest";
+            return "";
+        case Action::Drop:
+            if (!movable(o)) return "fixed objects can't fall";
+            if (mount_of(o) == Mount::Held) return "held objects don't fall";
+            if (mount_of(o) == Mount::Resting) return "already resting: can't fall";
+            if (!support) return "nothing flat to land on";
+            return "";
+        case Action::Roll:
+            if (o.shape != Shape::Ball) return "only balls roll";
+            if (!movable(o)) return "fixed objects can't move";
+            if (!turns(o)) return "a held ball can't turn";
+            if (!support) return "nothing flat to roll on";
+            return "";
+        case Action::Slide:
+            if (!movable(o)) return "fixed objects can't move";
+            if (turns(o)) return "a free ball rolls instead";
+            // pressed together by a hand, or by gravity on a flat support
+            if (mount_of(o) == Mount::Held ? !steady(t) : !support)
+                return mount_of(o) == Mount::Held ? "the target would fly off"
+                                                  : "nothing flat to slide on";
+            return "";
+        default:
+            return "";
+    }
+}
+
+ActionCheck check_action(const BodyDesc& o, const BodyDesc& t, Action wanted) {
+    if (wanted == Action::None) return {Action::None, ""};
+    const char* why = why_not(o, t, wanted);
+    if (!why[0]) return {wanted, ""};
+    // the closest motion that can happen: a drop that cannot fall is a hit,
+    // a roll that cannot turn slides, a slide that turns rolls
+    Action alt = Action::None;
+    if (wanted == Action::Drop) alt = Action::Impact;
+    if (wanted == Action::Roll) alt = Action::Slide;
+    if (wanted == Action::Slide) alt = Action::Roll;
+    if (alt != Action::None && why_not(o, t, alt)[0]) alt = Action::None;
+    return {alt, why};
 }
 
 }  // namespace pa

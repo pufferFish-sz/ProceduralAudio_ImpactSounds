@@ -3,7 +3,7 @@
 // Built against the FMOD Engine 2.02.23 SDK (to match FMOD Studio 2.02.23);
 // integration-tested in the real FMOD engine by cpp/tests/fmod_host_check.py.
 //
-// Parameters (v2.2; procaudio_fmod.plugin.js lays them out in Studio's deck):
+// Parameters (v2.4; procaudio_fmod.plugin.js lays them out in Studio's deck):
 //   OBJECT  Obj Shape, Obj Material, Obj Mount   int
 //           Obj Size (m, log dial), Obj Thickness (m, 0 = auto),
 //           Obj Hit Pos (0 center/middle .. 1 edge/end)
@@ -26,10 +26,33 @@
 //                  event renders it, so nothing sounds twice)
 //   Level   float  dB over the calibration 0 dBFS = 63 Pa at 1 m (130 dB SPL)
 //   Contacts data  ContactMsg[] from game code (sample-accurate offsets)
+//   Fit Length float s, 0 = off (v2.4, after Contacts so the indices above
+//                  stay): fade to true silence this long after the start,
+//                  sample by sample, so a short instrument ends without a
+//                  cut. ProcAudio > Ending: Fit writes the instrument's length.
 //
 // Dials display what they mean: Size "6.0 cm, 882 g, 7.5 kHz" (size used
 // after the shape's clamp, mass, lowest mode), Thickness "auto (2.4 cm)",
 // Hit Pos "30% to the edge", Speed "drop 2 m/s = from 20 cm".
+//
+// What makes sense (pa::check_action): a Drop needs a free object over a
+// support, a Roll a free ball on a support (a held ball or a box slides
+// instead), nothing moves on a free target in mid-air. The plugin plays the
+// closest sensible motion and the Speed label says why ("held/resting ball
+// slides"). The ProcAudio Studio script (procaudio_studio_menu.js) hides those
+// options in its editor dialog.
+//
+// The sound ends when it is actually quiet (output below -120 dBFS for
+// 100 ms), never on a timer, so long metal rings are not cut. In Studio a
+// synchronous instrument still stops dead at the end of its trigger
+// region: the ProcAudio script's "Set Up Instrument" makes it Async with an
+// AHDSR release.
+//
+// Render capture (FMOD Studio only, or PROCAUDIO_CAPTURE=1): every Play is
+// saved as a 32-bit float WAV in %LOCALAPPDATA%/FMOD Studio/ProcAudio
+// (PROCAUDIO_CAPTURE_DIR overrides), newest 20 kept; last_render.txt names
+// the newest. The script's "Show Last Render" imports it into the project,
+// so its waveform shows in Studio's Assets browser.
 //
 // Changing a body never cuts the sound: the new voice is built off the
 // mixer thread and takes over at the next contact, while the old one keeps
@@ -53,6 +76,17 @@
 #include <new>
 #include <string>
 #include <thread>
+#include <vector>
+#include <ctime>
+#include <cstdlib>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 #include "fmod.h"
 #include "fmod_dsp.h"
@@ -63,7 +97,7 @@ namespace {
 using pa::BodyDesc;
 
 const char* const kMotionNames[] = {"Impact", "Drop", "Roll", "Slide"};
-enum MotionMode { M_IMPACT, M_DROP, M_ROLL, M_SLIDE, M_COUNT };
+enum MotionMode { M_IMPACT, M_DROP, M_ROLL, M_SLIDE, M_COUNT, M_NONE = M_COUNT };
 const char* const kRenderNames[] = {"Both", "Object only", "Target only"};
 enum RenderMode { R_BOTH, R_OBJECT, R_TARGET, R_COUNT };
 enum SourceMode { S_DECK, S_SAME };   // the target is set on the deck / is the object
@@ -125,8 +159,30 @@ Prewarm& prewarm() {
 enum Param {
     P_O_SHAPE, P_O_MATERIAL, P_O_MOUNT, P_O_SIZE, P_O_THICK, P_O_HIT,
     P_T_SHAPE, P_T_MATERIAL, P_T_FINISH, P_T_MOUNT, P_T_SIZE, P_T_THICK, P_T_HIT,
-    P_MOTION, P_SPEED, P_RENDER, P_LEVEL, P_CONTACTS, P_COUNT
+    P_MOTION, P_SPEED, P_RENDER, P_LEVEL, P_CONTACTS,
+    P_FIT,      // v2.4, appended: the indices above stay what game code uses
+    P_COUNT
 };
+
+// ---------------------------------------------------------- Fit Length
+// FMOD gives a plug-in no way to know its instrument's length, and Studio
+// cuts a synchronous instrument dead at its end. Studio's own envelopes
+// (the timeline fade-out, an AHDSR release) move the volume once per mix
+// block with a curve that stays loud until late, so on a short instrument
+// they still end in a cut (-33 .. -41 dBFS for a 0.15 s steel-ball hit).
+// The ProcAudio menu writes the instrument's length here instead; the
+// plug-in then fades its own output, sample by sample, to true silence just
+// before the end. 0 = off: the sound rings as long as it rings.
+constexpr double kFitMarginS = 0.001;    // silent this long before the end
+double fit_fade_s(double len) { return std::clamp(0.3 * len, 0.005, 0.1); }
+// the gain at t seconds after the Play started: 1, then a raised-cosine
+// fade to 0 ending kFitMarginS before len, then 0
+double fit_gain(double t, double len) {
+    const double end = len - kFitMarginS, f = fit_fade_s(len);
+    if (t >= end) return 0.0;
+    if (t <= end - f) return 1.0;
+    return 0.5 - 0.5 * std::cos(3.14159265358979323846 * (end - t) / f);
+}
 
 // log-feeling dials (piecewise-linear mapping, evenly spaced points)
 float g_size_vals[] = {0.005f, 0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f};
@@ -135,6 +191,8 @@ float g_size_pos[] = {0.0f, 1 / 11.f, 2 / 11.f, 3 / 11.f, 4 / 11.f, 5 / 11.f, 6 
 float g_thick_vals[] = {0.0f, 0.0005f, 0.001f, 0.002f, 0.005f, 0.01f, 0.02f, 0.05f, 0.1f, 0.3f};
 float g_speed_vals[] = {0.0f, 0.05f, 0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f};
 float g_speed_pos[] = {0.0f, 1 / 8.f, 2 / 8.f, 3 / 8.f, 4 / 8.f, 5 / 8.f, 6 / 8.f, 7 / 8.f, 1.0f};
+float g_fit_vals[] = {0.0f, 0.05f, 0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 30.0f};
+float g_fit_pos[] = {0.0f, 1 / 9.f, 2 / 9.f, 3 / 9.f, 4 / 9.f, 5 / 9.f, 6 / 9.f, 7 / 9.f, 8 / 9.f, 1.0f};
 float g_thick_pos[] = {0.0f, 1 / 9.f, 2 / 9.f, 3 / 9.f, 4 / 9.f, 5 / 9.f, 6 / 9.f, 7 / 9.f, 8 / 9.f, 1.0f};
 
 const char* g_shape_names[8];
@@ -194,6 +252,50 @@ void describe_hit(const BodyDesc& d, char* out, std::size_t n) {
     else std::snprintf(out, n, "%d%% to the %s", pct, hi);
 }
 
+// ---------------------------------------------------------- render capture
+
+// True inside FMOD Studio (the authoring tool), or when PROCAUDIO_CAPTURE=1:
+// games never write files.
+bool capture_enabled() {
+    if (const char* e = std::getenv("PROCAUDIO_CAPTURE")) return e[0] == '1';
+#ifdef _WIN32
+    wchar_t path[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring exe(path);
+    for (auto& c : exe) c = static_cast<wchar_t>(towlower(c));
+    return exe.find(L"fmod studio") != std::wstring::npos ||
+           exe.find(L"fmodstudio") != std::wstring::npos;
+#else
+    return false;
+#endif
+}
+
+std::filesystem::path capture_dir() {
+    if (const char* d = std::getenv("PROCAUDIO_CAPTURE_DIR")) return std::filesystem::path(d);
+    const char* la = std::getenv("LOCALAPPDATA");
+    return std::filesystem::path(la ? la : ".") / "FMOD Studio" / "ProcAudio";
+}
+
+void write_wav_f32(const std::filesystem::path& file, const float* x, std::size_t n, int fs) {
+    std::ofstream f(file, std::ios::binary);
+    auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    const uint32_t bytes = static_cast<uint32_t>(n * 4);
+    f.write("RIFF", 4); u32(36 + bytes); f.write("WAVE", 4);
+    f.write("fmt ", 4); u32(16); u16(3); u16(1); u32(static_cast<uint32_t>(fs));
+    u32(static_cast<uint32_t>(fs) * 4); u16(4); u16(32);   // IEEE float, mono
+    f.write("data", 4); u32(bytes);
+    f.write(reinterpret_cast<const char*>(x), static_cast<std::streamsize>(bytes));
+}
+
+std::string slug_of(const BodyDesc& d) {
+    char b[64];
+    double sz = std::min(pa::size_max(d.shape), std::max(pa::size_min(d.shape), d.size));
+    std::snprintf(b, sizeof(b), "%s-%s-%.0fcm", pa::shape_name(d.shape), d.material.c_str(),
+                  sz * 100.0);
+    return b;
+}
+
 // ---------------------------------------------------------- instance state
 
 struct Slot {                      // a built voice and the request it answers
@@ -239,14 +341,18 @@ struct State {
     BodyDesc obj = default_object(), tgt = default_target();
     int source = S_DECK;
     bool built_motion = false;         // the latest voice has roll / slide tables
+    int wanted_motion = M_IMPACT;      // what the deck asks for (Motion)
+    char motion_reason[32] = "";       // why the played motion differs (or "")
     std::mutex info_mtx;               // dial labels, rebuilt lazily when read
     bool info_dirty = true;
     char obj_size[32] = "", tgt_size[32] = "", obj_thick[32] = "", tgt_thick[32] = "";
     char obj_hit[32] = "", tgt_hit[32] = "";
     // shared
     std::atomic<int> gen{0};
-    std::atomic<int> motion{M_IMPACT}, render{R_BOTH};
+    std::atomic<int> motion{M_IMPACT}, render{R_BOTH};   // motion = what PLAYS (check_action)
     std::atomic<float> speed{2.0f}, level_db{0.0f};
+    std::atomic<float> fit_len{0.0f};        // Fit Length (s), 0 = off
+    std::atomic<long long> play_pos{0};      // samples since this Play started
     std::atomic<bool> start_pending{true};   // fire Impact / Drop on first process
     std::atomic<Slot*> pending{nullptr};
     SpscQueue<Slot*, 16> retired;            // mixer -> user thread
@@ -255,7 +361,10 @@ struct State {
     Slot* active = nullptr;
     Slot* fading = nullptr;
     unsigned fade_quiet = 0, fade_age = 0;
-    unsigned idle_samples = 0;
+    unsigned quiet_samples = 0;
+    // render capture (Studio): the mixer appends, release() writes the WAV
+    std::vector<float> cap;
+    std::size_t cap_n = 0;
     Builder builder;
 
     BodyDesc target() const { return source == S_SAME ? obj : tgt; }
@@ -291,9 +400,17 @@ struct State {
         std::lock_guard<std::mutex> lock(info_mtx);
         info_dirty = true;
     }
+    // user thread: what plays for the wanted Motion, and why it differs
+    void update_action() {
+        pa::ActionCheck c = pa::check_action(obj, target(), static_cast<pa::Action>(wanted_motion));
+        motion.store(c.use == pa::Action::None ? M_NONE : static_cast<int>(c.use));
+        std::lock_guard<std::mutex> lock(info_mtx);
+        std::snprintf(motion_reason, sizeof(motion_reason), "%s", c.reason);
+    }
     void rebuild() {                   // user thread, after any body change
         free_retired();
         mark_info();   // labels cost a body build each: not on every setter
+        update_action();
         const int g = gen.fetch_add(1) + 1;
         const BodyDesc t = target();
         // roll / slide tables only when the motion needs them (~0.5 s cold)
@@ -305,9 +422,81 @@ struct State {
         }
         builder.post(this, obj, t, fs, built_motion, g);
     }
-    void set_motion(int m) {           // user thread
-        motion.store(m);
-        if ((m == M_ROLL || m == M_SLIDE) && !built_motion) rebuild();
+    void set_motion(int m) {           // user thread: the wanted Motion
+        wanted_motion = m;
+        update_action();
+        const int use = motion.load();
+        if ((use == M_ROLL || use == M_SLIDE) && !built_motion) rebuild();
+    }
+    // user thread (release): save this Play as a WAV, keep the newest 20
+    void write_capture() {
+        if (cap.empty()) return;
+        std::size_t n = cap_n, last = 0;
+        for (std::size_t i = 0; i < n; ++i)
+            if (std::abs(cap[i]) > 1e-6f) last = i + 1;
+        if (last == 0) return;                                    // never sounded
+        n = std::min(n, last + static_cast<std::size_t>(0.05 * fs));
+        namespace fsys = std::filesystem;
+        std::error_code ec;
+        const fsys::path dir = capture_dir();
+        fsys::create_directories(dir, ec);
+        std::time_t now = std::time(nullptr);
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &now);
+#else
+        localtime_r(&now, &tm);
+#endif
+        char stamp[32];
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
+        static std::atomic<unsigned> seq{0};
+        const int mm = motion.load();
+        const char* mname = mm == M_NONE ? "None" : kMotionNames[mm];
+        char name[200];
+        std::snprintf(name, sizeof(name), "render_%s_%03u_%s_%s_%s.wav", stamp, seq++ % 1000,
+                      mname, slug_of(obj).c_str(),
+                      source == S_SAME ? "same" : slug_of(tgt).c_str());
+        const fsys::path file = dir / name;
+        write_wav_f32(file, cap.data(), n, static_cast<int>(fs));
+        std::ofstream(dir / "last_render.txt") << file.generic_string();
+        // the Play's peak, for the ProcAudio panel: a physically quiet pair
+        // (a rubber ball on a massive steel ball: -55 dBFS) sounds "silent"
+        float pk = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) pk = std::max(pk, std::abs(cap[i]));
+        char peak[64];
+        std::snprintf(peak, sizeof(peak), "%.1f", 20.0 * std::log10(std::max(pk, 1e-12f)));
+        std::ofstream(dir / "last_play.txt") << peak << "\n" << file.generic_string() << "\n";
+        // plays.txt: one line per Play, its peak and the parameter values
+        // that made it, so the panel finds the peak of the SELECTED
+        // instrument (an event plays all its instruments at once)
+        {
+            char line[400];   // the deck's values (Tgt ones even when Same as object)
+            std::snprintf(line, sizeof(line),
+                          "%s %d %d %d %.6g %.6g %.6g %d %d %d %d %.6g %.6g %.6g %d %.6g %d %.6g",
+                          peak, static_cast<int>(obj.shape), material_index(obj.material),
+                          static_cast<int>(obj.mount), obj.size, obj.thickness, obj.hit,
+                          source == S_SAME ? 0 : static_cast<int>(tgt.shape) + 1,
+                          material_index(tgt.material), static_cast<int>(tgt.finish),
+                          static_cast<int>(tgt.mount), tgt.size, tgt.thickness, tgt.hit,
+                          wanted_motion, static_cast<double>(speed.load()), render.load(),
+                          static_cast<double>(level_db.load()));
+            std::vector<std::string> lines;
+            {
+                std::ifstream in(dir / "plays.txt");
+                for (std::string l; std::getline(in, l);)
+                    if (!l.empty()) lines.push_back(l);
+            }
+            lines.push_back(line);
+            if (lines.size() > 100) lines.erase(lines.begin(), lines.end() - 100);
+            std::ofstream outp(dir / "plays.txt");
+            for (const auto& l : lines) outp << l << "\n";
+        }
+        // keep the newest 20 renders
+        std::vector<fsys::path> all;
+        for (const auto& e : fsys::directory_iterator(dir, ec))
+            if (e.path().filename().string().rfind("render_", 0) == 0) all.push_back(e.path());
+        std::sort(all.begin(), all.end());
+        for (std::size_t i = 0; i + 20 < all.size(); ++i) fsys::remove(all[i], ec);
     }
 };
 
@@ -356,6 +545,8 @@ FMOD_RESULT F_CALL cb_create(FMOD_DSP_STATE* s) {
     s->functions->getsamplerate(s, &rate);
     state->fs = rate;
     s->plugindata = state;
+    if (capture_enabled())   // up to 30 s of this Play (Studio only: ~6 MB)
+        state->cap.assign(static_cast<std::size_t>(30.0 * state->fs), 0.0f);
     state->rebuild();
     return FMOD_OK;
 }
@@ -363,6 +554,7 @@ FMOD_RESULT F_CALL cb_create(FMOD_DSP_STATE* s) {
 FMOD_RESULT F_CALL cb_release(FMOD_DSP_STATE* s) {
     State* state = st(s);
     state->builder.shutdown();
+    try { state->write_capture(); } catch (...) {}   // a preview must never break a Play
     delete state->pending.exchange(nullptr);
     delete state->active;
     delete state->fading;
@@ -373,6 +565,14 @@ FMOD_RESULT F_CALL cb_release(FMOD_DSP_STATE* s) {
 
 FMOD_RESULT F_CALL cb_reset(FMOD_DSP_STATE* s) {
     st(s)->start_pending.store(true);   // a re-triggered instrument plays again
+    st(s)->play_pos.store(0);           // ... and its Fit Length counts from here
+    return FMOD_OK;
+}
+
+// FMOD calls this when playback starts part-way into the sound: Fit Length
+// then counts from that position, not from 0
+FMOD_RESULT F_CALL cb_setposition(FMOD_DSP_STATE* s, unsigned int pos) {
+    st(s)->play_pos.store(static_cast<long long>(pos));
     return FMOD_OK;
 }
 
@@ -387,6 +587,9 @@ FMOD_RESULT F_CALL cb_process(FMOD_DSP_STATE* s, unsigned int length,
         }
         return FMOD_OK;
     }
+    const long long pos0 = state->play_pos.fetch_add(length);   // this block's first sample
+    const double fit = state->fit_len.load();
+    const bool fitted = fit > 0.0;
     // a freshly built voice takes over; the old one rings out alongside
     if (Slot* fresh = state->pending.exchange(nullptr)) {
         if (state->active) {
@@ -410,7 +613,7 @@ FMOD_RESULT F_CALL cb_process(FMOD_DSP_STATE* s, unsigned int length,
     const bool current = a->gen == state->gen.load();
     if (current && state->start_pending.exchange(false)) queue_start(state);
 
-    const int mode = state->motion.load();
+    const int mode = state->motion.load();   // the played motion (check_action)
     pa::Motion m = pa::Motion::None;
     if (mode == M_ROLL) m = v->roll() ? pa::Motion::Roll : pa::Motion::Slide;
     if (mode == M_SLIDE) m = pa::Motion::Slide;
@@ -430,6 +633,7 @@ FMOD_RESULT F_CALL cb_process(FMOD_DSP_STATE* s, unsigned int length,
     double ob[512], tb[512];
     unsigned done = 0;
     double fade_ss = 0.0;
+    float peak = 0.0f;
     while (done < length) {
         const int n = static_cast<int>(std::min(512u, length - done));
         double mix[512];
@@ -443,25 +647,43 @@ FMOD_RESULT F_CALL cb_process(FMOD_DSP_STATE* s, unsigned int length,
                 fade_ss += y * y;
             }
         }
-        for (int i = 0; i < n; ++i)
-            for (int c = 0; c < nch; ++c)
-                buf[(done + i) * nch + c] = static_cast<float>(gain * mix[i]);
+        for (int i = 0; i < n; ++i) {
+            double g = gain;
+            if (fitted) g *= fit_gain(static_cast<double>(pos0 + done + i) / state->fs, fit);
+            const float y = static_cast<float>(g * mix[i]);
+            peak = std::max(peak, std::abs(y));
+            for (int c = 0; c < nch; ++c) buf[(done + i) * nch + c] = y;
+        }
+        if (state->cap_n < state->cap.size()) {   // preview capture (preallocated)
+            const std::size_t k = std::min<std::size_t>(n, state->cap.size() - state->cap_n);
+            for (std::size_t i = 0; i < k; ++i) state->cap[state->cap_n + i] = buf[(done + i) * nch];
+            state->cap_n += k;
+        }
         done += static_cast<unsigned>(n);
     }
-    if (state->fading) {   // done when 100 ms below -120 dB re 63 Pa, or after 4 s
+    if (state->fading) {   // done when 100 ms below -120 dB re 63 Pa (30 s at most)
         const bool quiet = gain * gain * fade_ss / length < 1e-12;
         state->fade_quiet = quiet ? state->fade_quiet + length : 0;
         state->fade_age += length;
-        if (state->fade_quiet > 0.1 * state->fs || state->fade_age > 4.0 * state->fs) {
+        if (state->fade_quiet > 0.1 * state->fs || state->fade_age > 30.0 * state->fs) {
             retire(state, state->fading);
             state->fading = nullptr;
         }
     }
-    // idle: no motion, no event, nothing still running -> silence after 3 s
+    // the sound has ended when it is QUIET (below -120 dBFS for 100 ms) with
+    // nothing left to come: no motion, no event, no drop or old voice still
+    // running. A fixed timer would cut long rings (a steel plate rings > 3 s).
     const bool moving = m != pa::Motion::None && state->speed.load() > 0.0f;
-    if (!moving && !any_event && !v->busy() && !state->fading) state->idle_samples += length;
-    else state->idle_samples = 0;
-    return state->idle_samples > 3.0 * state->fs ? FMOD_ERR_DSP_SILENCE : FMOD_OK;
+    // Studio ends a plug-in instrument once it reports silence, so never
+    // before this Play's own voice has fired its start: a voice still being
+    // built (or an old one waiting for its replacement) is silent too.
+    const bool started = current && !state->start_pending.load();
+    // past the Fit Length the output is 0 whatever still rings or moves
+    const bool past_fit = fitted && static_cast<double>(pos0 + length) >= fit * state->fs;
+    const bool quiet = past_fit || (started && peak < 1e-6f && !moving && !any_event &&
+                                    !v->busy() && !state->fading);
+    state->quiet_samples = quiet ? state->quiet_samples + length : 0;
+    return state->quiet_samples > 0.1 * state->fs ? FMOD_ERR_DSP_SILENCE : FMOD_OK;
 }
 
 BodyDesc* side(State* state, int index) {
@@ -503,7 +725,7 @@ FMOD_RESULT F_CALL cb_setint(FMOD_DSP_STATE* s, int index, int value) {
             auto v = static_cast<pa::Mount>(std::clamp(value, 0, static_cast<int>(pa::Mount::Count) - 1));
             changed = v != d->mount; d->mount = v; break;
         }
-        case P_MOTION: state->set_motion(std::clamp(value, 0, M_COUNT - 1)); return FMOD_OK;
+        case P_MOTION: state->set_motion(std::clamp(value, 0, M_COUNT - 1)); return FMOD_OK;   // wanted
         case P_RENDER: state->render.store(std::clamp(value, 0, R_COUNT - 1)); return FMOD_OK;
         default: return FMOD_ERR_INVALID_PARAM;
     }
@@ -530,7 +752,7 @@ FMOD_RESULT F_CALL cb_getint(FMOD_DSP_STATE* s, int index, int* value, char* str
             *value = static_cast<int>(d->finish); name = pa::finish_name(d->finish); break;
         case P_O_MOUNT: case P_T_MOUNT:
             *value = static_cast<int>(d->mount); name = pa::mount_name(d->mount); break;
-        case P_MOTION: *value = state->motion.load(); name = kMotionNames[*value]; break;
+        case P_MOTION: *value = state->wanted_motion; name = kMotionNames[*value]; break;
         case P_RENDER: *value = state->render.load(); name = kRenderNames[*value]; break;
         default: return FMOD_ERR_INVALID_PARAM;
     }
@@ -548,6 +770,7 @@ FMOD_RESULT F_CALL cb_setfloat(FMOD_DSP_STATE* s, int index, float value) {
         case P_O_THICK: case P_T_THICK: field = &d->thickness; break;
         case P_O_HIT: case P_T_HIT: field = &d->hit; break;
         case P_LEVEL: state->level_db.store(value); return FMOD_OK;
+        case P_FIT: state->fit_len.store(std::max(0.0f, value)); return FMOD_OK;
         case P_SPEED: {
             const bool changed = value != state->speed.exchange(value);
             // Impact / Drop: a NEW value re-fires the one-shot (automation,
@@ -562,7 +785,10 @@ FMOD_RESULT F_CALL cb_setfloat(FMOD_DSP_STATE* s, int index, float value) {
         }
         default: return FMOD_ERR_INVALID_PARAM;
     }
-    if (static_cast<double>(value) == *field) return FMOD_OK;
+    // compare at float precision: Studio sets every parameter on a new
+    // instance, as floats (0.06 arrives as 0.0599999986); comparing against
+    // the double default would rebuild the voice for nothing, once per dial
+    if (static_cast<float>(*field) == value) return FMOD_OK;
     *field = value;
     if (index >= P_T_SHAPE && state->source == S_SAME) state->mark_info();
     else state->rebuild();
@@ -584,7 +810,15 @@ FMOD_RESULT F_CALL cb_getfloat(FMOD_DSP_STATE* s, int index, float* value, char*
         case P_T_HIT: *value = static_cast<float>(d->hit); info = state->tgt_hit; break;
         case P_SPEED: *value = state->speed.load(); break;
         case P_LEVEL: *value = state->level_db.load(); break;
+        case P_FIT: *value = state->fit_len.load(); break;
         default: return FMOD_ERR_INVALID_PARAM;
+    }
+    char fit_info[32];
+    if (index == P_FIT) {
+        if (*value <= 0.0f) std::snprintf(fit_info, sizeof(fit_info), "off: rings out");
+        else std::snprintf(fit_info, sizeof(fit_info), "ends at %.3g s (%.0f ms fade)", *value,
+                           1000.0 * fit_fade_s(*value));
+        info = fit_info;
     }
     char speed_info[32];
     if (index == P_SPEED) {   // what the one Speed knob means right now
@@ -596,6 +830,8 @@ FMOD_RESULT F_CALL cb_getfloat(FMOD_DSP_STATE* s, int index, float* value, char*
                           100.0 * v * v / (2.0 * 9.81));
         else std::snprintf(speed_info, sizeof(speed_info), "%s at %.2g m/s",
                            m == M_ROLL ? "rolling" : "sliding", v);
+        if (state->motion_reason[0])   // e.g. "a held ball can't turn"
+            std::snprintf(speed_info, sizeof(speed_info), "%s", state->motion_reason);
         info = speed_info;
     }
     if (str) {
@@ -657,13 +893,13 @@ FMOD_RESULT F_CALL cb_sys_deregister(FMOD_DSP_STATE*) {
 FMOD_DSP_DESCRIPTION g_desc = {
     FMOD_PLUGIN_SDK_VERSION,
     "ProcAudio Contact",   // name: company/product, no version
-    0x00020200,            // plug-in version 2.2
+    0x00020400,            // plug-in version 2.4
     0,                     // no input: a sound module
     1,                     // one output buffer
     cb_create, cb_release, cb_reset,
     nullptr,               // read
     cb_process,
-    nullptr,               // setposition
+    cb_setposition,
     P_COUNT, g_params,
     cb_setfloat, cb_setint, nullptr, cb_setdata,
     cb_getfloat, cb_getint, nullptr, cb_getdata,
@@ -738,6 +974,10 @@ extern "C" F_EXPORT FMOD_DSP_DESCRIPTION* F_CALL FMODGetDSPDescription() {
                                       -40.0f, 80.0f, 0.0f);
         FMOD_DSP_INIT_PARAMDESC_DATA(P[P_CONTACTS], "Contacts", "", "ContactMsg[] from game code",
                                      FMOD_DSP_PARAMETER_DATA_TYPE_USER);
+        FMOD_DSP_INIT_PARAMDESC_FLOAT_WITH_MAPPING(P[P_FIT], "Fit Length", "s",
+            "Fade to silence at this time after the start: the instrument's length, written by "
+            "ProcAudio > Ending: Fit (0 = off, the sound rings out)",
+            0.0f, g_fit_vals, g_fit_pos);
         for (int i = 0; i < P_COUNT; ++i) g_params[i] = &P[i];
         init = true;
     }

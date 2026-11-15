@@ -159,6 +159,20 @@ void Biquad::lowpass(double fc, double fs, double q) {
     x1 = x2 = y1 = y2 = 0.0;
 }
 
+void Biquad::highpass(double fc, double fs, double q) {
+    // RBJ high-pass
+    double w0 = 2.0 * kPi * fc / fs;
+    double cw = std::cos(w0), sw = std::sin(w0);
+    double alpha = sw / (2.0 * q);
+    double a0 = 1.0 + alpha;
+    b0 = (1.0 + cw) / 2.0 / a0;
+    b1 = -(1.0 + cw) / a0;
+    b2 = b0;
+    a1 = -2.0 * cw / a0;
+    a2 = (1.0 - alpha) / a0;
+    x1 = x2 = y1 = y2 = 0.0;
+}
+
 void ClickFilter::setup(double area, double fs) {
     double a = std::sqrt(area / kPi);
     double w0 = kCAir / a;

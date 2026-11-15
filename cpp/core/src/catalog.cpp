@@ -282,6 +282,77 @@ std::string roll_key(const BodyDesc& od, const BodyDesc& td) {
            contact_material(td) + "|" + contact_material(od);
 }
 
+// Roughness (rms, m) of a slider's own contact face, by material: sanded
+// wood, corrugated board, machined metal, molded plastic, glazed ceramic...
+// Plausibility presets until recordings say otherwise.
+double slider_roughness(const std::string& m) {
+    if (m == "wood") return 6e-6;
+    if (m == "cardboard") return 20e-6;
+    if (m == "metal" || m == "plastic") return 1.5e-6;
+    if (m == "glass") return 0.3e-6;
+    if (m == "ceramic") return 1e-6;
+    if (m == "rubber") return 8e-6;
+    if (m == "stone") return 20e-6;
+    if (m == "concrete") return 60e-6;
+    return 10e-6;
+}
+
+// The surface a slider feels (descriptions only; the catalog presets keep
+// the floor's own profile, as the Python reference does). Three things the
+// floor profile alone gets wrong, each of which made slides on smooth
+// floors sound like gravel (kurtosis 11-40 instead of ~3):
+//  1. Both faces are rough. On a varnished floor (1.5 um) a sanded wooden
+//     box (6 um) is the rough one: combined roughness sqrt(h_f^2 + h_s^2),
+//     as for the rolling rims. It gives the continuous hiss.
+//  2. A flat face bridges grooves and treads narrower than itself: only the
+//     share width / face length of its contacts is over the feature. A
+//     rounded slider (radius R) sinks into a groove of width w by at most
+//     w^2 / (8 R).
+//  3. "A little grit" is per metre of floor, not per contact track: the
+//     tracks under one face share it. Polished and tiled floors are clean.
+SurfaceSpec slide_surface(const BodyDesc& od, const Body& o, const BodyDesc& td, int n_tracks) {
+    SurfaceSpec s = surface_spec(texture_of(td));
+    const double hs = slider_roughness(contact_material(od));
+    const double h2 = s.h_rms * s.h_rms + hs * hs;
+    if (h2 > 0.0) {
+        s.reson_share *= s.h_rms * s.h_rms / h2;   // the floor's texture keeps its power
+        s.h_rms = std::sqrt(h2);
+    }
+    if (s.feat_period > 0.0) {
+        if (o.contact_radius <= 0.0) {             // flat face: bridged (under 2 % left
+            s.feat_period = 0.0;                   // for any face the plugin offers)
+            s.feat_height = 0.0;
+        } else if (s.feat_height < 0.0) {          // rounded slider over a groove
+            const double sink = s.feat_width * s.feat_width / (8.0 * o.contact_radius);
+            s.feat_height = -std::min(-s.feat_height, sink);
+        }
+    }
+    s.grit_per_m /= std::max(1, n_tracks);
+    const Finish fin = floor_finish(td);
+    if (fin == Finish::Polished || fin == Finish::Tiled) s.grit_per_m *= 0.2;   // swept, hard floors
+    return s;
+}
+
+std::string slide_key(const BodyDesc& od, const BodyDesc& td) {
+    // what slide_surface depends on, from the descriptions alone
+    const bool flat = od.shape != Shape::Ball && od.shape != Shape::Stick;
+    const double size = std::min(size_max(od.shape), std::max(size_min(od.shape), od.size));
+    char buf[96];
+    // flat faces share one table; rounded: Ball radius (1/6-octave grid) / Stick edge.
+    // The slider's material counts only through its roughness.
+    std::snprintf(buf, sizeof(buf), "%d|%.6g|%.6g|%.3g", flat ? 1 : 0,
+                  flat ? 0.0 : roll_radius_step(size),
+                  od.shape == Shape::Stick ? od.thickness : 0.0,
+                  slider_roughness(contact_material(od)));
+    return std::string("dslide|") + texture_of(td) + "|" + buf + "|" +
+           std::to_string(static_cast<int>(floor_finish(td)));
+}
+
+// A ball free to turn rolls and never slides (check_action): no slide tables.
+bool needs_slide(const BodyDesc& od) {
+    return !(od.shape == Shape::Ball && (od.mount == Mount::Free || od.mount == Mount::Resting));
+}
+
 struct DescBuild {
     Body o, t;
     double e = 0.0;
@@ -313,9 +384,10 @@ void build_desc(const BodyDesc& od, const BodyDesc& td, double fs, bool motion,
     }
     SlideParams sp = slide_params(b.o, b.t);
     std::vector<SplinePtr> st;
-    if (motion)
-        st = get_or_build(c.slide, std::string("dslide|") + texture_of(td), [&] {
-            return SlideExciter::build_tables(sp, surface_spec(texture_of(td)));
+    const bool slides = motion && needs_slide(od);
+    if (slides)
+        st = get_or_build(c.slide, slide_key(od, td), [&] {
+            return SlideExciter::build_tables(sp, slide_surface(od, b.o, td, sp.n_tracks));
         });
     double mu = get_or_build(c.mu, pair_key(od, td, fs),
                              [&] { return pair_mu(b.o, b.t, b.e, fs); });
@@ -323,7 +395,7 @@ void build_desc(const BodyDesc& od, const BodyDesc& td, double fs, bool motion,
     auto v = std::make_unique<ContactVoice>();
     v->prepare(fs, b.o, b.t);
     if (ball) v->prepare_roll_shared(rp, rt);
-    if (motion) v->prepare_slide_shared(sp, st);
+    if (slides) v->prepare_slide_shared(sp, st);
     v->set_impact_dissipation(mu, 1.0);
     v->set_restitution(b.e);
     *voice_out = std::move(v);
@@ -344,7 +416,7 @@ bool desc_assets_ready(const BodyDesc& od, const BodyDesc& td, double fs, bool m
     Cache& c = cache();
     std::lock_guard<std::mutex> lock(c.mtx);
     return (rk.empty() || c.roll.count(rk)) &&
-           (!motion || c.slide.count(std::string("dslide|") + texture_of(td))) &&
+           (!motion || !needs_slide(od) || c.slide.count(slide_key(od, td))) &&
            c.mu.count(pair_key(od, td, fs));
 }
 

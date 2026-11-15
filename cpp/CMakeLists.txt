@@ -36,6 +36,9 @@ add_executable(procaudio_tests tests/test_core.cpp)
 target_link_libraries(procaudio_tests PRIVATE procaudio_core)
 add_test(NAME core COMMAND procaudio_tests)
 
+# Unity native plug-in (C API), copied into the Unity demo project.
+add_subdirectory(plugins/unity)
+
 # FMOD sound module: built only when the FMOD Engine SDK is found.
 # Install the FMOD Engine (2.02.x, to match FMOD Studio 2.02.23) and set
 # FMOD_SDK_DIR to its "api" folder's parent, e.g.

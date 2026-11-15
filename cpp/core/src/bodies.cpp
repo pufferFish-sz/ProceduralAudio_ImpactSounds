@@ -285,6 +285,8 @@ void SoundingBody::setup(const Body& body, double fs) {
         double rho_s = body.rad.phys.rho * body.rad.h;
         forced_gain_ = kRhoAir / (2.0 * kPi * kRListen * rho_s);
         forced_lp_.lowpass(std::min(coincidence_freq(body.rad.h, body.rad.phys), 0.45 * fs), fs);
+        forced_hp_on_ = body.rad.forced_fmin > 0.0 && body.rad.forced_fmin < 0.45 * fs;
+        if (forced_hp_on_) forced_hp_.highpass(body.rad.forced_fmin, fs);
     }
     has_click_ = !body.fixed;
     // rigid-body motion of the whole object radiates as a compact dipole,
@@ -302,7 +304,11 @@ double SoundingBody::process(double force, double sign) {
         prev_ = y;
     }
     if (has_click_) out += click_.process(sign * force * inv_mass_);
-    if (forced_gain_ != 0.0) out += sign * forced_gain_ * forced_lp_.process(force);
+    if (forced_gain_ != 0.0) {
+        double f = forced_lp_.process(force);
+        if (forced_hp_on_) f = forced_hp_.process(f);
+        out += sign * forced_gain_ * f;
+    }
     return out;
 }
 

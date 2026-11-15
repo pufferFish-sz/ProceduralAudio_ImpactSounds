@@ -149,11 +149,21 @@ double SlideExciter::process(double velocity) {
                     double tau = hertz_contact_time(mpj, t.k_asp, v_rel);
                     int L = std::max(2, static_cast<int>(std::lround(tau * fs_s_)));
                     L = std::min<int>(L, static_cast<int>(pending_.size()) - 1);
-                    double sum = 0.0;
-                    for (int i = 0; i < L; ++i) sum += std::sin(kPi * (i + 0.5) / L);
-                    for (int i = 0; i < L; ++i)
-                        pending_[(pend_pos_ + static_cast<std::size_t>(i)) & pend_mask] +=
-                            J * fs_s_ * std::sin(kPi * (i + 0.5) / L) / sum;
+                    // half-sine pulse sin(pi (i + 1/2) / L), normalized to unit
+                    // area: sum_i sin((i + 1/2) th) = 1 / sin(th / 2), th = pi / L.
+                    // The sines come from a rotation recurrence: on soft floors
+                    // (rug) a pulse is thousands of samples long and two sin()
+                    // calls per sample made sliding cost 10x real time.
+                    const double th = kPi / L;
+                    const double cr = std::cos(th), sr = std::sin(th);
+                    double sn = std::sin(0.5 * th), cn = std::cos(0.5 * th);
+                    const double amp = J * fs_s_ * sn;   // J fs / sum
+                    for (int i = 0; i < L; ++i) {
+                        pending_[(pend_pos_ + static_cast<std::size_t>(i)) & pend_mask] += amp * sn;
+                        const double s2 = sn * cr + cn * sr;
+                        cn = cn * cr - sn * sr;
+                        sn = s2;
+                    }
                 }
                 t.contact = true; t.y = z; t.yt = zt;
                 t.on_len = 0;                    // force builds up again

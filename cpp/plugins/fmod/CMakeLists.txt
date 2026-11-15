@@ -9,7 +9,10 @@ target_link_libraries(procaudio_fmod PRIVATE procaudio_core)
 add_custom_command(TARGET procaudio_fmod POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/procaudio_fmod.plugin.js"
-          "${CMAKE_CURRENT_SOURCE_DIR}/procaudio_fmod_divider.png" $<TARGET_FILE_DIR:procaudio_fmod>)
+          "${CMAKE_CURRENT_SOURCE_DIR}/procaudio_fmod_divider.png"
+          "${CMAKE_CURRENT_SOURCE_DIR}/procaudio_studio_menu.js" $<TARGET_FILE_DIR:procaudio_fmod>)
+# procaudio_studio_menu.js is a Studio SCRIPT, not part of the deck: install it
+# in %LOCALAPPDATA%/FMOD Studio/Scripts (the other three go to .../Plugins).
 
 # Integration test host: the real FMOD engine loads and plays the plugin
 # (cpp/tests/fmod_host_check.py runs it and checks the result).

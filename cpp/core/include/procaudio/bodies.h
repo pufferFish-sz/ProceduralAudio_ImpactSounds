@@ -34,6 +34,13 @@ struct Radiator {
     bool plate = false;        // false: compact dipole
     double a = 0, b = 0, h = 0;
     Material phys;
+    // Forced (drive-point) radiation only above this frequency (Hz, 0 = no
+    // limit). The formula is the infinite plate's; a finite panel does not
+    // bend below its lowest mode: it moves as a whole (the rigid click) or is
+    // held by its edges. Without the limit a light panel (a cardboard box
+    // wall, 0.56 kg/m^2) turns the whole contact force into a 30-80 Hz
+    // pressure pulse 20 dB above its own sound. Set by make_body().
+    double forced_fmin = 0.0;
 };
 
 struct Body {
@@ -87,6 +94,8 @@ private:
     ModalBank bank_;
     ClickFilter click_;
     Biquad forced_lp_;          // plates: forced (drive-point) radiation
+    Biquad forced_hp_;          // ... above the panel's lowest mode (Radiator::forced_fmin)
+    bool forced_hp_on_ = false;
     double forced_gain_ = 0.0;  // rho_0 / (2 pi r rho_s); 0 for non-plates
     bool has_click_ = false;
     bool has_modes_ = false;

@@ -12,7 +12,9 @@
              controls are then ignored and their dials say so. Floor finish
              applies to Panel and Ground targets only. (Studio 2.02 decks
              cannot grey controls out: deck widgets have no enabled state.)
-     MOTION  how they meet: Motion + one Speed knob, Render, Level
+     MOTION  how they meet: Motion + one Speed knob, Render, Level, and
+             Fit length (v2.4): fade to silence at the instrument's end.
+             ProcAudio > Ending: Fit writes it from the instrument's length.
    Studio titles each bound control with its displayName.
    Design: proto/docs/plugin_body_design.md. */
 
@@ -68,6 +70,7 @@ studio.plugins.registerPluginDescription("ProcAudio Contact", {
         "Speed": { displayName: "Speed" },
         "Render": { displayName: "Render", enumeration: ["Both", "Object only", "Target only"] },
         "Level": { displayName: "Level" },
+        "Fit Length": { displayName: "Fit length" },
     },
     // deck context menu. The physics spans ~75 dB (impacts ~130 dB SPL,
     // rolling / sliding 50-75 dB), so continuous motions start from a raised
@@ -114,7 +117,7 @@ studio.plugins.registerPluginDescription("ProcAudio Contact", {
         // MOTION: how they meet
         vbox([
             vbox([dropdown("Motion"), dropdown("Render")]),
-            hbox([dial("Speed", "#d5793a"), dial("Level")]),
+            hbox([dial("Speed", "#d5793a"), dial("Level"), dial("Fit Length")]),
         ], true),
     ], 10),
 });

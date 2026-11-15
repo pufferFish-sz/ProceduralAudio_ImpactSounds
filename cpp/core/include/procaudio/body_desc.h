@@ -111,4 +111,37 @@ double pair_mu(const Body& o, const Body& t, double e_target, double fs, double 
 std::unique_ptr<ContactVoice> make_pair_voice(const BodyDesc& object, const BodyDesc& target,
                                               double fs);
 
+// ---------------------------------------------------------- what makes sense
+
+// How the two bodies meet (the plugin's Motion list).
+enum class Action { Impact, Drop, Roll, Slide, None, Count };
+const char* action_name(Action a);   // "Impact", "Drop", "Roll", "Slide", "None"
+
+// True when the target can carry the object: a flat top (Box, Panel,
+// Ground) that holds still (Ground, Built-in, Resting, or Held level like a
+// tray). A ball or a stick has no flat top; a free body is flying.
+bool target_supports(const BodyDesc& target);
+
+// What actually plays when `wanted` is asked for, and why it differs.
+// Ground is always Built-in. Free and Held bodies move; Resting and
+// Built-in ones sit still (a Resting body can still be pushed). The rules
+// (the plugin enforces them; the ProcAudio panel hides what they exclude;
+// design doc Part 11 charts every combination):
+//   Impact  something moves (object or target Free or Held).
+//   Drop    a Free object onto a supporting target.
+//   Roll    a Ball free to turn (Free or Resting) on a supporting target.
+//   Slide   a body that can move and does not turn (not a Free / Resting
+//           ball: it rolls), pressed against the target by a hand (Held
+//           object; the target must hold still) or by gravity (on a
+//           supporting target).
+// When `wanted` cannot happen the closest motion plays if it can (Drop ->
+// Impact, Roll -> Slide, Slide -> Roll), else None.
+// reason: "" when `wanted` plays as asked, else why not ("only balls roll",
+// "a free ball rolls instead", ...).
+struct ActionCheck {
+    Action use = Action::Impact;
+    const char* reason = "";
+};
+ActionCheck check_action(const BodyDesc& object, const BodyDesc& target, Action wanted);
+
 }  // namespace pa

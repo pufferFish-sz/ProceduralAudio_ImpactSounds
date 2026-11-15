@@ -564,3 +564,492 @@ NFL's 100 g limit (Penn State Center for Sports Surface Research,
 2015 (Politecnico di Torino, iris.polito.it: walking recorded with a dummy
 head on grass, wood, stone and gravel in urban parks; the measuring
 distance still needs checking in the paper).
+
+---
+
+## Part 8 — v2.3: endings, render preview, sensible motions, duplicate sounds (2026-11-07)
+
+### 8.1 The abrupt cut at the end
+
+There were two causes. Both were found and both are fixed.
+
+1. **Studio: synchronous instruments stop dead.** A plug-in instrument is
+   synchronous by default. The test event's instruments were 0.125–1 s
+   long, and none was async. Studio's manual (26.6): a synchronous
+   instrument stops producing audio immediately when the playback position
+   leaves it, even with an AHDSR. Rendering one 0.15 s instrument (steel
+   ball on the polished wood floor) through the **FMOD Studio runtime**,
+   built from copies of the test project:
+
+   | instrument setup | the sound |
+   |---|---|
+   | as authored (synchronous) | cut dead at 0.27 s |
+   | **Async + Cut + 1.5 s AHDSR release** | rings on, fades smoothly to silence at ~1.8 s |
+   | Async without Cut | still cut at the region end |
+
+   So the fix is Async + Cut + a volume release. A plug-in cannot set that
+   for its own instrument; a Studio script can: **ProcAudio > Set Up
+   Selected Instruments (Async + Release)** (`procaudio_studio_menu.js`).
+2. **Plug-in: a 3 s silence timer.** The plug-in reported silence to FMOD
+   3 s after the last hit, however loud the ring still was, and dropped a
+   replaced voice after 4 s. Long metal rings were cut. Now:
+   - the plug-in reports silence only when the output has been below
+     -120 dBFS for 100 ms, and never before the Play's start hit has fired.
+     The Studio runtime ends a plug-in instrument once it reports silence,
+     so reporting it early would end a Play before it sounds.
+   - The host test's 1 m steel stick on concrete rings for the full 6 s
+     segment, with no drop larger than 1 dB per 5 ms.
+
+**Start latency.** In the Studio-runtime render the first sound came
+~0.13 s after `EventInstance::start()`. A trace showed the plug-in fires
+its hit in the first block FMOD gives it, so the delay is in Studio's
+event scheduling, not the plug-in. It is still to be measured against a
+plain sample instrument in Unity. (Studio sets every parameter as a float
+on a new instance. The setters now compare at float precision, so 0.06 vs
+0.0599999986 no longer rebuilds the voice for nothing.)
+
+### 8.2 Seeing the waveform
+
+Studio draws waveforms only for audio files; a plug-in instrument has
+none. So:
+- **The plug-in saves every Play inside Studio** (never in a game: the
+  host must be FMOD Studio, or `PROCAUDIO_CAPTURE=1`) as a 32-bit float WAV
+  in `%LOCALAPPDATA%/FMOD Studio/ProcAudio`. The name says what it was
+  (`render_<time>_Impact_Ball-metal-6cm_Panel-wood-240cm.wav`), the newest
+  20 are kept, and `last_render.txt` names the newest.
+- **ProcAudio > Show Last Render** imports it into the project and selects
+  it in the Assets browser, which shows the waveform and plays it.
+  Imported renders are ordinary project assets: delete them when done.
+- **Host test:** the capture of the last Play equals FMOD's own render
+  (level difference +0.00 dB).
+
+### 8.3 Options that make sense (dynamic lists)
+
+The deck cannot hide or grey anything out. Studio **scripts** can
+(`studio.ui` dialogs with `onCurrentIndexChanged`, `setEnabled`,
+`setItems`). So there are two layers:
+
+1. **Rules in the core** (`pa::check_action`):
+   - Drop needs a free object over a support (floor, Built-in or Resting);
+   - Roll needs a free Ball on a support; a held or resting ball, or a box,
+     slides instead;
+   - nothing moves on a free target in mid-air;
+   - a Built-in object cannot move.
+
+   The plug-in plays the closest sensible motion and the Speed dial says
+   why ("held/resting ball slides", "only balls roll: sliding").
+2. **ProcAudio > Edit Selected Instrument...**: the whole deck in a
+   dialog.
+   - The Motion list holds only what this pair can do, and a line explains
+     what is not offered and why.
+   - Target controls grey out for Same as object.
+   - Floor finish greys out for anything but Panel and Ground; Mount for
+     Ground.
+   - Thickness and Hit position grey out for balls.
+   - The same rules, in JavaScript.
+
+Checked headless with `fmodstudiocl -script` on a copy of the test
+project:
+- the 3 ProcAudio instruments are found;
+- parameters round-trip;
+- every rule case matches the C++ test;
+- Set Up survives a save and reload (async, cut, one 2.5 s AHDSR each);
+- a capture imports.
+
+The dialog itself and the menu need Studio's window, so they are not yet
+tried by hand.
+
+### 8.4 Duplicate sounds in the engine: plug-in or Unity script?
+
+The problem: Unity sends `OnCollisionEnter` to **both** rigidbodies. If
+both carry a ProcAudio event that plays the pair (Render = Both), every
+contact plays twice. Two identical copies add up to +6 dB, at twice the
+CPU, and it piles up in a busy scene.
+
+**Recommendation: route contacts in a Unity script. The plug-in keeps
+only the building blocks.**
+
+| | Unity contact router (recommended) | inside the plug-in |
+|---|---|---|
+| sees both bodies, their emitters and positions | yes | no: each event instance is isolated; it sees one contact message |
+| can stop the duplicate before an event instance exists (saves CPU and voices) | yes | no: the second instance already runs, even if it stays silent |
+| decides who owns the sound (3D position, priority) | yes | no |
+| voice budget across the scene (distance culling, max contacts per frame, stealing) | yes, plus FMOD's own max instances | no |
+| debouncing (contact chatter, resting contacts) | yes: physics events are there | partly |
+
+How the router works:
+1. **One `ProcAudioContactRouter` per scene.** Every `SoundBody`
+   forwards its collisions to it.
+2. **One sound per contact.** Use an unordered pair key per physics step:
+   the first report handles it, the mirror report is dropped.
+3. **Ownership:**
+   - a moving body against a static one (floor, wall): the moving body's
+     voice plays **Both**, and static bodies have no voice;
+   - two moving bodies: one owner plays Both (the heavier one, or the
+     lower instance id);
+   - if both must keep ringing on their own (bell and hammer), each plays
+     **Object only** and both get the contact.
+4. **Debounce:**
+   - a minimum impulse;
+   - a minimum time between hits of the same pair (~30 ms);
+   - resting contacts become one continuous roll/slide per pair, updated
+     each physics step.
+5. **Budget:**
+   - a cap on new contacts per frame;
+   - a distance cut-off;
+   - priority by impulse;
+   - FMOD's max instances and stealing as the last resort.
+6. **One persistent voice per object** (one event instance per
+   `SoundBody`), fed hits through `ContactMsg`, as planned in
+   `cpp_plugin_design.md`.
+
+The plug-in's part:
+- **now:** Render (Both / Object only / Target only);
+- **phase 4:** the body registry and target ids in `ContactMsg`;
+- **optional later:** a safety net that drops an identical contact
+  (same ids within 5 ms) reported by two instances.
+
+---
+
+## Part 9 — v2.4: Fit Length, an ending that fits the instrument (2026-11-07)
+
+### 9.1 Why Studio's own envelopes are not enough
+
+Part 8.1 fixed the cut by letting the sound ring past the instrument
+(Async + Cut + a long release). That ending does not fit the instrument.
+To fit it, the sound must fade out *inside* the region. Rendering a 0.15 s
+steel-ball hit through the FMOD Studio runtime, from copies of the test
+project:
+
+| ending | what is left at the cut |
+|---|---|
+| as authored (synchronous) | cut from -24 dBFS |
+| timeline fade-out (fade handle) over the last 0.1 s | only ~10 dB down, cut from -33 dBFS |
+| Async + Cut + 60 ms AHDSR release | rings 85 ms past the end, cut from -32 dBFS |
+| Async + Cut + 200 ms AHDSR release | cut from -41 dBFS |
+| Async + Cut + 1.5 s release (Part 8) | smooth, but rings ~1.3 s past the end |
+| **Fit Length (v2.4)** | **fades to digital silence 0.6 ms before the end** |
+
+Studio moves an instrument's volume once per mix block (~21 ms), and its
+fade and release curves stay loud until late. A short instrument stops
+before they get low.
+
+### 9.2 What v2.4 does
+
+- **The plug-in cannot find its instrument's length.** FMOD tells a
+  plug-in neither the length nor when the end comes. A Studio script can
+  read it (`sound.length`).
+- **Fit Length parameter** (s, 0 = off). The plug-in counts samples from
+  the Play's start (and from the position FMOD gives `setposition`, if
+  playback starts part-way in). It multiplies its output by a
+  raised-cosine fade: 30% of the length, clamped to 5–100 ms, ending 1 ms
+  before Fit Length. After that the output is 0 and the plug-in reports
+  silence. The fade is sample-accurate, so Studio's block timing does not
+  matter, and the same fade plays in the game (the value is saved with the
+  event).
+- **The menu** (Scripts › ProcAudio):
+  - **Ending: Fit Selected to Their Length** writes each instrument's
+    length, makes it synchronous and removes Ring Out's release;
+  - **Ending: Ring Out Selected (Async + Release)** is Part 8's Set Up,
+    and sets Fit Length to 0;
+  - **Ending: Update Fitted Lengths (Whole Project)** refreshes every
+    fitted instrument. A script cannot see an instrument being resized,
+    so run it after resizing.
+
+### 9.3 Upgrading existing instruments
+
+Adding a parameter broke every existing ProcAudio event: Studio refused to
+build it ("plug-ins ... not compatible with their placed instances, and
+will be ignored"), and the event played silent. Studio does not add the
+new parameter to instruments made with v2.3. Adding it by script with only
+a name and value was still rejected; it must carry the dial's mapping
+curve exactly as Studio stores it. So `procaudio_studio_menu.js` adds Fit
+Length (off, with the curve) to every older ProcAudio instrument whenever a
+project loads. Studio evaluates scripts on project load, also in
+`fmodstudiocl -build`, so even a command-line build of an un-upgraded copy
+succeeds. Save the project in Studio to keep the upgrade.
+
+### 9.4 Checks
+
+- **Host test (real FMOD engine):**
+  - a steel-ball hit with Fit Length 0.15 s equals the unfitted hit before
+    the fade (difference -584 dB), is -74 dB re its peak in the last 2 ms
+    and silent after;
+  - a roll with Fit Length 0.4 s is silent after 0.4 s;
+  - the dial reads `ends at 0.15 s (45 ms fade)`.
+- **FMOD Studio runtime, banks built by `fmodstudiocl` from copies of the
+  test project:**
+  - an un-upgraded copy builds once the script is installed;
+  - Ring Out, then Fit, gives a synchronous instrument with Fit Length =
+    its length and no release left;
+  - after a resize, Update Fitted Lengths changes exactly that one, and a
+    second run changes none;
+  - the fitted 0.15 s instrument is bit-identical to the unfitted one for
+    its first 100 ms and fades to silence before the end.
+- **Not tried by hand:** the menu items in Studio's window, and whether
+  Studio calls `setposition` when playback starts inside an instrument (if
+  it does not, Fit Length counts from where playback started).
+
+---
+
+## Part 10 — The live panel, and "no sound" from a quiet pair (2026-11-07)
+
+### 10.1 "No sound" from a new instrument
+
+A new instrument set up as a rubber ball (6 cm) dropped on a 1 m metal ball
+(Built-in) seemed silent. The plug-in did play: the renders saved in
+Studio peak at **-54.6 dBFS**, against -19 to -48 dBFS for the other
+instruments in the same session. The calibration makes 0 dBFS = 130 dB SPL
+at 1 m, so -55 dBFS is about 75 dB SPL at 1 m. That is a plausible
+real-world level, but next to nothing at normal monitor gain. A soft rubber
+ball has a long contact. It barely excites a massive (about 4 t) solid
+steel ball, whose lowest mode is about 450 Hz. v2.4 did not change this:
+the Fit Length gain is skipped when it is off. The fix is a tool, not the
+physics: the panel shows the peak and has **Make audible** (10.3).
+
+### 10.2 Can the deck be rebuilt after each selection? Tested: no
+
+Tested in the running Studio 2.02.23 window (script server on TCP 3663,
+window captures):
+- **Deck widgets** have no enabled / visible / changed properties
+  (plug-in reference 20.4).
+- **A second `registerPluginDescription`** for the plug-in is ignored: the
+  deck keeps the first layout.
+- **The deck file runs in its own script context.** It can reach
+  `studio.project`, `studio.window`, `studio.menu` and `studio.system`, but
+  it has no timers (no modeless dialogs). Menu items it adds never appear.
+  Normal scripts have no `registerPluginDescription`.
+- **`studio.window.triggerAction`** refuses ScriptReload, the only thing
+  that re-evaluates the deck file.
+- **Studio's deck dials print their own numbers** (`0.06 m`, `2.00 m/s`),
+  not the plug-in's value strings. The labels of earlier parts (`same as
+  object`, `held/resting ball slides`, mass and kHz) are not visible in
+  Studio.
+
+### 10.3 What works: a live panel beside the deck
+
+Normal scripts *can* open a modeless dialog with a timer. Its widgets can
+be hidden (`setVisible`), greyed (`setEnabled`) and refilled (`setItems`).
+**ProcAudio > Open Panel (follows the selection)**:
+- **Follows the selection:** every 250 ms it reads the selected ProcAudio
+  instrument. A change of instrument, or of any value (from the deck too),
+  redraws it.
+- **Hides what does not apply:**
+  - the target rows for Same as object;
+  - Floor finish except Panel / Ground;
+  - target Mount for Ground;
+  - Thickness and Hit position for balls.
+- **Motion:** offers only the motions the pair can do. It says what is not
+  offered and why, and what a stored motion plays as ("Motion Roll plays
+  as Slide: held/resting ball slides"). The stored Motion changes only
+  when the user picks one, so a Roll comes back once the ball is free.
+  Speed is labelled by meaning (hit / drop "= from 20 cm" / rolling /
+  sliding).
+- **Writes straight to the instrument:** the deck follows.
+- **Loudness:** the plug-in appends each Play's peak and parameter values
+  to `plays.txt`. The panel shows the peak of the newest Play with exactly
+  these settings (an event plays all its instruments at once, so "the last
+  Play" alone is ambiguous). **Make audible** sets Level so it peaks at
+  -12 dBFS.
+- **Ending:** shows the current ending (fits / rings out / cut), with
+  Fit to length and Ring out buttons.
+
+**Checked in the Studio window** (a scratch copy of the test project,
+driven through the script server and Windows UI Automation):
+- the rows hide and show for a ball, a stick, Same as object, Ground and
+  Box targets;
+- a deck-side change appears in the panel;
+- panel dropdowns write to the model (Shape, Mount, Target);
+- changing Shape keeps the stored Roll;
+- the rubber ball on a 1 m metal ball reads -54.6 dBFS; Make audible sets
+  Level +43, and the next Play peaks at -11.6 dBFS;
+- Fit to length writes 0.883 s and makes the instrument synchronous.
+
+**Not covered:** typing into the panel's number fields was not driven by
+UI Automation. It goes through the same write path as the dropdowns.
+
+---
+
+## Part 11 — Motion rules for every combination (2026-11-13)
+
+### 11.1 What was wrong
+
+The v2.3 rules (Part 8.3) let a **free ball slide** on the ground. They also
+had other gaps:
+- a held or resting ball was told to slide;
+- a free ball or a stick counted as something to roll or slide on;
+- Impact was allowed even when nothing could move (two built-in bodies, or
+  a resting box on the ground).
+
+### 11.2 The rules
+
+Ground is always Built-in. **Free** and **Held** bodies move. **Resting**
+and **Built-in** bodies sit still, but a Resting body can still be pushed.
+A **support** is a flat top (Box, Panel, Ground) that holds still: on the
+ground, Built-in, Resting, or Held level like a tray.
+
+| motion | can happen when | otherwise plays |
+|---|---|---|
+| Impact | the object or the target moves (Free or Held) | nothing |
+| Drop | a Free object over a support | Impact, if it can happen |
+| Roll | a Ball free to turn (Free or Resting) on a support | Slide, if it can happen |
+| Slide | a body that can move and does not turn (a Free or Resting ball rolls instead), pressed against the target by a hand (Held object; the target must not be Free) or by gravity (on a support) | Roll, if it can happen |
+
+The reasons the plugin gives (and the panel shows):
+- "nothing moves: both at rest"
+- "held objects don't fall"
+- "already resting: can't fall"
+- "fixed objects can't fall"
+- "nothing flat to land on"
+- "only balls roll"
+- "a held ball can't turn"
+- "nothing flat to roll on"
+- "a free ball rolls instead"
+- "the target would fly off"
+- "nothing flat to slide on"
+- "fixed objects can't move"
+
+### 11.3 Every combination
+
+There are 17 object bodies (4 shapes × 4 mounts, plus Ground) and 17
+target bodies, so 289 pairs. "Same as object" is the matching pair.
+
+| motion | pairs where it plays as asked |
+|---|---|
+| Impact | 208 |
+| Drop | 28 |
+| Roll | 14 |
+| Slide | 94 |
+| nothing can happen | 61 pairs |
+
+- `procaudio_render rules` dumps all 1,156 cases (pair × asked motion: what
+  plays, and why) as CSV.
+- The chart (an object × target matrix, filterable by motion) is built from
+  that dump.
+- `cpp/tests/rules_js_check.js` runs the panel's JavaScript rules over the
+  same dump, plus the Same-as-object variants: 1,224 cases, 0 mismatches.
+
+### 11.4 In the plugin and the panel
+
+- **The plugin** plays the closest motion that can happen, or stays silent.
+- **The panel's Motion list** holds only motions that can happen, and says
+  why the others are missing. Two special cases:
+  - a stored motion that is silent for the pair shows as "Impact (silent)"
+    rather than as another motion;
+  - when nothing can happen, the list is greyed and the note says to make
+    the object or the target Free or Held.
+- **Speed** is labelled by the motion that actually plays.
+- **Checked in the Studio window:**
+  - a free wood ball on metal ground with Motion Slide shows Roll ("a free
+    ball rolls instead");
+  - a resting box shows "Impact (silent)";
+  - a built-in box on the ground greys out Motion.
+
+### 11.5 Lists that adapt to the other body (2026-11-14)
+
+The panel's object Shape, object Mount, Target and target Mount lists now
+offer a choice only if, with everything else as it is, some motion could
+still happen. Examples:
+- **A Built-in object** leaves the target only **Free** or **Held**:
+  something has to move. Same as object and Ground are gone, since both
+  would be fixed too.
+- **A Resting object on the Ground** loses Ground from its Shape list and
+  Built-in from its Mount list.
+
+The value the instrument has now always stays in its list, so an
+instrument set up on the deck still shows as it is. A note names what is
+hidden ("Hidden because nothing could happen with them: Target mount
+Resting, Built-in").
+
+**Checks:**
+- `cpp/tests/rules_js_check.js` walks all 480 Shape / Mount / Target
+  states. In each of the four lists, an offered choice leaves some motion
+  possible, a hidden one leaves none, and the current value stays: 0
+  problems.
+- In the Studio window, for a resting panel on the Ground, the Down key
+  stops at Panel (Ground is not in the list) and Up writes Box to the
+  instrument.
+
+---
+
+## Part 12 — Cardboard hits and grainy slides: two model faults fixed (2026-11-14)
+
+Found by measurement (`procaudio_render probe <dir>` renders named cases;
+no recordings used). Both fixes apply to bodies built from descriptions
+(the plugin). The catalog presets keep the Python reference behaviour, so
+the golden tests still pass (18/18).
+
+### 12.1 Box and panel hits were one low pressure pulse
+
+- **Symptom:** a cardboard box hit sounded like a short thud with no box
+  in it, and a drop like two pops.
+- **Measured:** 90% of the energy below 78 Hz, gone in 14 ms, at -4.5 dBFS
+  (125 dB SPL). The panel's own modes were 20 dB below. A wooden box
+  reached +4 dBFS.
+- **Cause:** forced (drive-point) radiation, p = rho_0 F / (2 pi r rho_s),
+  is the infinite plate's formula. It was applied at all frequencies, so a
+  light panel (cardboard: 0.56 kg/m^2) turned the whole 10 ms contact
+  force into a pressure pulse. A finite panel does not bend below its
+  lowest mode: it moves as a whole (the rigid click covers that) or is
+  held by its edges.
+- **Fix:** `Radiator::forced_fmin`, set by `make_body()` to the panel's
+  lowest mode. `SoundingBody` high-passes the forced radiation there
+  (2nd order).
+
+| 2 m/s hit on concrete | before | after |
+|---|---|---|
+| cardboard box 30 cm: peak | -4.5 dBFS | -13.8 dBFS |
+| half of the energy below | 32 Hz | 356 Hz |
+| 30 dB down after | 14 ms | 34 ms |
+| wooden box 30 cm: peak | +4.0 dBFS | -15.1 dBFS |
+| 30 dB down after | 8 ms | 118 ms |
+
+**Not changed** (needs recordings):
+- the cardboard contact still rebounds at e = 0.92 in the contact solve.
+  The drop's bounce times do not use it: boxes rock (Housner);
+- cardboard's loss factor (0.05, plus 0.10 on its bottom face).
+
+### 12.2 Slides on smooth floors sounded like gravel
+
+- **Measured** (wooden box, 0.3 m/s; smooth noise has kurtosis 3):
+
+| floor | kurtosis before | after | 5 ms level spread before | after |
+|---|---|---|---|---|
+| polished wood | 11.2 | 3.9 | 7.6 dB | 2.4 dB |
+| bare wood | 10.0 | 3.5 | 5.8 dB | 3.7 dB |
+| tiled | 25.8 | 3.9 | 6.9 dB | 3.6 dB |
+| concrete (was fine) | 2.9 | 3.0 | 2.2 dB | 3.0 dB |
+
+- **Cause:** on a smooth floor (1.5 um rms) the roughness gives almost
+  nothing, so the sound was the floor's *features*: a 0.3 mm groove every
+  12 cm and "a little grit", counted once per contact track (6 tracks, so
+  90 particles per metre).
+- **Fix** (`slide_surface()` in `catalog.cpp`):
+  1. **Both faces are rough.** Combined roughness sqrt(h_floor^2 +
+     h_slider^2), as for the rolling rims. Slider presets: wood 6 um,
+     cardboard 20, metal and plastic 1.5, glass 0.3, ceramic 1, rubber 8,
+     stone 20.
+  2. **A flat face bridges grooves and treads.** A rounded slider of
+     radius R sinks into a groove of width w by at most w^2 / (8 R).
+  3. **Grit is per metre of floor**, shared by the tracks. Polished and
+     tiled floors are clean (x 0.2).
+- **Side effects:**
+  - slides on smooth floors are 10–20 dB quieter (wooden box on polished
+    wood: -63 to -82 dBFS rms). The grooves and grit carried the level;
+  - a ball free to turn never slides (Part 11), so it builds no slide
+    tables;
+  - a rounded slider (held ball, stick) builds its tables on the first
+    Play: about 0.5 s of silence once, then cached;
+  - start-up prewarm takes about 18 s (the host test now waits 20 s).
+
+### 12.3 Still wrong, and waiting for recordings
+
+- **Slides are dull.** The contact-patch size (60–200 um) cuts the
+  spectrum at v / (2 pi sigma): about 800 Hz at 0.3 m/s. A real slide
+  hisses up to several kHz. The table grid (20 um) limits how small the
+  patch can go.
+- **Level against speed is too steep.** The wooden box on polished wood
+  gains 23 dB from 0.3 to 1 m/s. Measured friction noise grows by roughly
+  half that.
+- **Very smooth pairs are near silent** (held steel ball on polished wood:
+  -107 dBFS).
