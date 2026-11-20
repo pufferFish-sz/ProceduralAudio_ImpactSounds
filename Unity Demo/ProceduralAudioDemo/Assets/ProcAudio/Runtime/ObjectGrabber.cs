@@ -10,7 +10,8 @@ namespace ProcAudio
     ///   Mouse wheel  hold distance
     /// The held object follows the crosshair by velocity, so it still collides.
     /// Aim at the floor (or a table) while holding and the object is pressed onto
-    /// it: move the mouse and it slides there (the held voice: a held ball slides).
+    /// it: move the mouse and it slides there (a held object sends Held = 1: a held
+    /// ball slides instead of rolling).
     /// </summary>
     public class ObjectGrabber : MonoBehaviour
     {
@@ -23,16 +24,19 @@ namespace ProcAudio
         public float throwSpeed = 9f;
         [Tooltip("How far into a surface under the crosshair the object is pressed (m)")]
         public float pressDepth = 0.015f;
+        [Tooltip("On pick-up the hold point starts this much (m) closer than where you clicked, so " +
+                 "the object comes up off the surface instead of being pressed into it and dragged")]
+        public float pickUpLift = 0.25f;
         [Tooltip("Position gain: fraction of the gap closed per physics step")]
         public float follow = 0.5f;
         public float maxSpeed = 10f;
         public LayerMask mask = ~0;
 
-        public ProcAudioBody Held => heldBody;
-        public ProcAudioBody Hover { get; private set; }
+        public SoundBody Held => heldBody;
+        public SoundBody Hover { get; private set; }
 
         Rigidbody held;
-        ProcAudioBody heldBody;
+        SoundBody heldBody;
         Quaternion rotOffset;
         float savedDamping, savedAngularDamping;
         bool savedGravity;
@@ -52,7 +56,7 @@ namespace ProcAudio
             if (held == null && cam != null &&
                 Physics.Raycast(cam.transform.position, cam.transform.forward, out var hit, reach, mask, QueryTriggerInteraction.Ignore))
             {
-                Hover = hit.rigidbody != null ? hit.rigidbody.GetComponent<ProcAudioBody>() : null;
+                Hover = hit.rigidbody != null ? hit.rigidbody.GetComponent<SoundBody>() : null;
             }
             if (mouse == null || !FirstPersonController.LookEnabled) return;
 
@@ -78,9 +82,9 @@ namespace ProcAudio
             var rb = hit.rigidbody;
             if (rb == null || rb.isKinematic || rb.mass > maxCarryMass) return;
             held = rb;
-            heldBody = rb.GetComponent<ProcAudioBody>();
+            heldBody = rb.GetComponent<SoundBody>();
             if (heldBody != null) heldBody.held = true;
-            holdDistance = Mathf.Clamp(hit.distance, minHold, maxHold);
+            holdDistance = Mathf.Clamp(hit.distance - pickUpLift, minHold, maxHold);
             savedGravity = rb.useGravity;
             savedDamping = rb.linearDamping;
             savedAngularDamping = rb.angularDamping;

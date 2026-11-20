@@ -143,6 +143,35 @@ private:
         double k_asp = 0.0;
     };
     void setup_common(double fs, const SlideParams& p);
+    // Long landing pulses (soft floors: a rug's contacts last ~70 ms, 14k
+    // samples at fs_s, and land ~8000 times a second) as resonator bins
+    // instead of sample-by-sample writes. A half-sine pulse of length L is the
+    // impulse response of a 2-pole resonator at th = pi / L driven by two
+    // equal impulses (at 0 and 1), cancelled exactly by the same two impulses
+    // delayed by L. Pulses are grouped by length on a 0.2 % grid: each keeps
+    // its impulse (area) exactly, its duration within +-0.1 %. Pulses shorter
+    // than kLongPulse (hard floors, the golden cases) keep the direct writes.
+    // The cancellations wait in one min-heap by time (a rug keeps ~700 pulses
+    // in flight, over 1000 of them in one bin).
+    static constexpr int kLongPulse = 1024;
+    struct PulseBin {
+        int L = 0, key = -1, pending = 0;   // pending: cancellations in the heap
+        double c2 = 0.0, s2 = 0.0;          // 2 cos(th), sin^2(th / 2)
+        double y1 = 0.0, y2 = 0.0, x_now = 0.0, x_next = 0.0;
+    };
+    struct Cancel {
+        long long t;
+        int bin;
+        double a;
+        bool operator<(const Cancel& o) const { return t > o.t; }   // std heap: earliest on top
+    };
+    bool add_long_pulse(double area, int L);   // false: no room, write directly
+    double run_pulse_bins();
+    std::vector<PulseBin> bins_;
+    std::vector<Cancel> cancels_;              // heap, capacity reserved in setup
+    std::vector<int> bin_of_key_, active_bins_, free_bins_;
+    int key0_ = 0;
+    long long step_ = 0;
     SlideParams p_;
     std::vector<Track> tracks_;
     Decimator dec_;

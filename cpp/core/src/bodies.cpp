@@ -312,6 +312,29 @@ double SoundingBody::process(double force, double sign) {
     return out;
 }
 
+void SoundingBody::process_block(const double* force, double* out, int n, double sign) {
+    // the same terms in the same order as process(): modes, click, forced
+    if (has_modes_) {
+        bank_.process_block(force, out, n);
+        for (int i = 0; i < n; ++i) {
+            const double y = out[i];
+            out[i] = 0.0 + (y - prev_) * fs_;
+            prev_ = y;
+        }
+    } else {
+        for (int i = 0; i < n; ++i) out[i] = 0.0;
+    }
+    if (has_click_)
+        for (int i = 0; i < n; ++i) out[i] += click_.process(sign * force[i] * inv_mass_);
+    if (forced_gain_ != 0.0) {
+        for (int i = 0; i < n; ++i) {
+            double f = forced_lp_.process(force[i]);
+            if (forced_hp_on_) f = forced_hp_.process(f);
+            out[i] += sign * forced_gain_ * f;
+        }
+    }
+}
+
 void SoundingBody::reset() {
     bank_.reset();
     prev_ = 0.0;

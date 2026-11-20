@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="ParameterPreset" id="{6894c9f3-db5b-491e-83c4-ba744263c520}">
+		<property name="name">
+			<value>Motion</value>
+		</property>
+		<relationship name="folder">
+			<destination>{66d6283b-2199-49a5-8d0b-6b02fdded3fa}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{298feb34-7c47-4e74-911d-6310f752a541}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{298feb34-7c47-4e74-911d-6310f752a541}">
+		<property name="parameterType">
+			<value>2</value>
+		</property>
+		<property name="maximum">
+			<value>3</value>
+		</property>
+		<property name="enumerationLabels">
+			<value>Impact</value>
+			<value>Roll</value>
+			<value>Slide</value>
+		</property>
+	</object>
+</objects>

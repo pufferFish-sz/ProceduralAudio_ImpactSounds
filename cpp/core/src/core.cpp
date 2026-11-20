@@ -4,6 +4,13 @@
 #include <map>
 #include <stdexcept>
 
+#if defined(_M_X64) || defined(__x86_64__) || defined(__SSE2__) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#define PA_SSE2 1
+#else
+#define PA_SSE2 0
+#endif
+
 namespace pa {
 
 // ------------------------------------------------------------ Rng (PCG32)
@@ -119,6 +126,58 @@ double ModalBank::process(double force) {
     }
     f_prev_ = force;
     return out;
+}
+
+void ModalBank::process_block(const double* force, double* out, int n) {
+    for (int i = 0; i < n; ++i) out[i] = 0.0;
+    if (n <= 0) return;
+    const std::size_t nm = a1_.size();
+    // the force each sample's recursion sees: the previous sample's (as process())
+    auto fprev = [&](int i) { return i == 0 ? f_prev_ : force[i - 1]; };
+    std::size_t m = 0;
+#if PA_SSE2
+    // 8 modes per step: four independent 2-lane recursions hide the latency of
+    // y = (a1 y1 + a2 y2) + b1 f (same operation order as process(), no FMA)
+    for (; m + 8 <= nm; m += 8) {
+        __m128d a1[4], a2[4], b1[4], g[4], y1[4], y2[4];
+        for (int k = 0; k < 4; ++k) {
+            const std::size_t j = m + 2 * k;
+            a1[k] = _mm_loadu_pd(&a1_[j]); a2[k] = _mm_loadu_pd(&a2_[j]);
+            b1[k] = _mm_loadu_pd(&b1_[j]); g[k] = _mm_loadu_pd(&g_[j]);
+            y1[k] = _mm_loadu_pd(&y1_[j]); y2[k] = _mm_loadu_pd(&y2_[j]);
+        }
+        for (int i = 0; i < n; ++i) {
+            const __m128d f = _mm_set1_pd(fprev(i));
+            __m128d acc = _mm_setzero_pd();
+            for (int k = 0; k < 4; ++k) {
+                const __m128d y = _mm_add_pd(_mm_add_pd(_mm_mul_pd(a1[k], y1[k]), _mm_mul_pd(a2[k], y2[k])),
+                                             _mm_mul_pd(b1[k], f));
+                y2[k] = y1[k];
+                y1[k] = y;
+                acc = _mm_add_pd(acc, _mm_mul_pd(g[k], y));
+            }
+            out[i] += _mm_cvtsd_f64(acc) + _mm_cvtsd_f64(_mm_unpackhi_pd(acc, acc));
+        }
+        for (int k = 0; k < 4; ++k) {
+            const std::size_t j = m + 2 * k;
+            _mm_storeu_pd(&y1_[j], y1[k]);
+            _mm_storeu_pd(&y2_[j], y2[k]);
+        }
+    }
+#endif
+    for (; m < nm; ++m) {   // the rest, one mode at a time
+        const double a1 = a1_[m], a2 = a2_[m], b1 = b1_[m], g = g_[m];
+        double y1 = y1_[m], y2 = y2_[m];
+        for (int i = 0; i < n; ++i) {
+            const double y = a1 * y1 + a2 * y2 + b1 * fprev(i);
+            y2 = y1;
+            y1 = y;
+            out[i] += g * y;
+        }
+        y1_[m] = y1;
+        y2_[m] = y2;
+    }
+    f_prev_ = force[n - 1];
 }
 
 void ModalBank::reset() {

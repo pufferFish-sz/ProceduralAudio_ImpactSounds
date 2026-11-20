@@ -23,3 +23,14 @@ add_custom_command(TARGET procaudio_fmod_host POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${FMOD_SDK_DIR}/api/core/lib/x64/fmod.dll" $<TARGET_FILE_DIR:procaudio_fmod_host>)
 add_dependencies(procaudio_fmod_host procaudio_fmod)
+
+# The Unity demo (FMOD for Unity) loads the plug-in from its Windows x86_64
+# plug-in folder, listed under FMOD Settings > Dynamic Plugins as
+# "procaudio_fmod". Close the Unity Editor before rebuilding: it locks the DLL.
+set(PROCAUDIO_UNITY_PROJECT "${CMAKE_CURRENT_SOURCE_DIR}/../../../Unity Demo/ProceduralAudioDemo"
+    CACHE PATH "Unity project that receives procaudio_fmod.dll")
+if(EXISTS "${PROCAUDIO_UNITY_PROJECT}/Assets/Plugins/FMOD/platforms/win/lib/x86_64")
+  add_custom_command(TARGET procaudio_fmod POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:procaudio_fmod>
+            "${PROCAUDIO_UNITY_PROJECT}/Assets/Plugins/FMOD/platforms/win/lib/x86_64/")
+endif()

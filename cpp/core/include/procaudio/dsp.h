@@ -29,7 +29,8 @@ public:
 private:
     std::vector<float> y_, m_;   // samples, second derivatives
     double dx_ = 1.0, inv_dx_ = 1.0, period_ = 0.0;
-    std::size_t n_ = 0;
+    double h2_ = 1.0 / 6.0, dx6_ = 1.0 / 6.0;   // dx^2 / 6, dx / 6 (eval)
+    std::size_t n_ = 0, mask_ = 0;              // n_ is a power of 2
 };
 
 // Integer-factor decimator: windowed-sinc low-pass (Kaiser beta 5,
@@ -45,6 +46,8 @@ public:
     int factor() const { return r_; }
 private:
     int r_ = 1;
+    // hist_ holds the history twice (hist_[p] == hist_[p + n]), so the taps
+    // read one contiguous run backwards from pos_ + n: no wrap-around branch
     std::vector<double> taps_, hist_;
     std::size_t pos_ = 0;
     long long count_ = 0;

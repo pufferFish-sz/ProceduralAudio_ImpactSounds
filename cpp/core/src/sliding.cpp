@@ -10,6 +10,17 @@ namespace pa {
 static constexpr double kUpRatio = 10.0;     // upward following limit, x N/m_p
 static constexpr double kRAsperity = 5e-4;   // m, asperity tip radius (landings)
 static constexpr double kTOn = 3e-4;         // s, force build-up after a landing
+// tanh through one exp: 1 - 2 / (e^2x + 1). MSVC's std::tanh costs ~38 ns, this
+// ~14 ns; it was a quarter of a slide on a hard floor. Absolute error <= ~3e-16
+// (exact at both ends: +-1); it only scales the up-force, never a lift-off test.
+static inline double tanh_fast(double x) {
+    const double e = std::exp(2.0 * x);
+    return 1.0 - 2.0 / (e + 1.0);
+}
+static constexpr double kBinRatio = 1.002;   // long-pulse length grid (0.2 %)
+static constexpr int kMaxBins = 128;         // long-pulse bins in use at once
+static constexpr int kMaxPulse = 1 << 14;    // longest pulse (pending_ ring)
+static constexpr std::size_t kMaxCancels = 8192;   // long pulses in flight
 
 // rms of white noise through the wobble low-pass at rate fs_s, measured once
 // per rate (20 s of noise) and cached: it cost ~50 ms per voice
@@ -89,8 +100,21 @@ void SlideExciter::setup_common(double fs, const SlideParams& p) {
     wobble_rms_ = wobble_rms(fs_s_, wobble_lp_);
     for (long i = 0; i < static_cast<long>(fs_s_); ++i)
         wobble_lp_.process(noise_.normal());   // settle the filter
-    pending_.assign(std::size_t(1) << 14, 0.0);
+    pending_.assign(std::size_t(kMaxPulse), 0.0);
     pend_pos_ = 0;
+    // long-pulse resonator bins (preallocated: process() never allocates)
+    const double lg = std::log(kBinRatio);
+    key0_ = static_cast<int>(std::lround(std::log(static_cast<double>(kLongPulse)) / lg));
+    const int nkeys = static_cast<int>(std::lround(std::log(static_cast<double>(kMaxPulse)) / lg)) - key0_ + 2;
+    bins_.assign(kMaxBins, PulseBin{});
+    bin_of_key_.assign(static_cast<std::size_t>(nkeys), -1);
+    active_bins_.clear();
+    active_bins_.reserve(kMaxBins);
+    free_bins_.clear();
+    for (int b = kMaxBins - 1; b >= 0; --b) free_bins_.push_back(b);
+    cancels_.clear();
+    cancels_.reserve(kMaxCancels);
+    step_ = 0;
     dec_.setup(os_);
     started_ = false;
     v_prev_ = v_last_ = last_out_ = 0.0;
@@ -130,7 +154,7 @@ double SlideExciter::process(double velocity) {
                     t.y = z; t.yt = zt;
                 } else {
                     double a_up = kUpRatio * a_dn;
-                    f = Nj + mpj * a_up * std::tanh(ztt / a_up);
+                    f = Nj + mpj * a_up * tanh_fast(ztt / a_up);
                     if (t.on_len < n_on_) f *= static_cast<double>(t.on_len) / n_on_;
                     ++t.on_len;
                     total += f;
@@ -149,20 +173,22 @@ double SlideExciter::process(double velocity) {
                     double tau = hertz_contact_time(mpj, t.k_asp, v_rel);
                     int L = std::max(2, static_cast<int>(std::lround(tau * fs_s_)));
                     L = std::min<int>(L, static_cast<int>(pending_.size()) - 1);
-                    // half-sine pulse sin(pi (i + 1/2) / L), normalized to unit
-                    // area: sum_i sin((i + 1/2) th) = 1 / sin(th / 2), th = pi / L.
-                    // The sines come from a rotation recurrence: on soft floors
-                    // (rug) a pulse is thousands of samples long and two sin()
-                    // calls per sample made sliding cost 10x real time.
-                    const double th = kPi / L;
-                    const double cr = std::cos(th), sr = std::sin(th);
-                    double sn = std::sin(0.5 * th), cn = std::cos(0.5 * th);
-                    const double amp = J * fs_s_ * sn;   // J fs / sum
-                    for (int i = 0; i < L; ++i) {
-                        pending_[(pend_pos_ + static_cast<std::size_t>(i)) & pend_mask] += amp * sn;
-                        const double s2 = sn * cr + cn * sr;
-                        cn = cn * cr - sn * sr;
-                        sn = s2;
+                    // long pulses (soft floors): a resonator bin, O(1) per landing
+                    if (L < kLongPulse || !add_long_pulse(J * fs_s_, L)) {
+                        // half-sine pulse sin(pi (i + 1/2) / L), normalized to unit
+                        // area: sum_i sin((i + 1/2) th) = 1 / sin(th / 2), th = pi / L.
+                        // The sines come from a rotation recurrence (two sin() calls
+                        // per sample cost too much on long pulses).
+                        const double th = kPi / L;
+                        const double cr = std::cos(th), sr = std::sin(th);
+                        double sn = std::sin(0.5 * th), cn = std::cos(0.5 * th);
+                        const double amp = J * fs_s_ * sn;   // J fs / sum
+                        for (int i = 0; i < L; ++i) {
+                            pending_[(pend_pos_ + static_cast<std::size_t>(i)) & pend_mask] += amp * sn;
+                            const double s2 = sn * cr + cn * sr;
+                            cn = cn * cr - sn * sr;
+                            sn = s2;
+                        }
                     }
                 }
                 t.contact = true; t.y = z; t.yt = zt;
@@ -170,7 +196,7 @@ double SlideExciter::process(double velocity) {
             }
         }
         started_ = true;
-        total += pending_[pend_pos_];
+        total += pending_[pend_pos_] + run_pulse_bins();
         pending_[pend_pos_] = 0.0;
         pend_pos_ = (pend_pos_ + 1) & pend_mask;
         double out;
@@ -178,6 +204,76 @@ double SlideExciter::process(double velocity) {
     }
     v_prev_ = velocity;
     return last_out_;
+}
+
+bool SlideExciter::add_long_pulse(double area, int L) {
+    // area: the pulse's sum over its samples (J fs_s), as the direct path
+    static const double lg = std::log(kBinRatio);
+    int key = static_cast<int>(std::lround(std::log(static_cast<double>(L)) / lg)) - key0_;
+    key = std::clamp(key, 0, static_cast<int>(bin_of_key_.size()) - 1);
+    if (cancels_.size() >= kMaxCancels) return false;   // full (never seen): direct path
+    int b = bin_of_key_[static_cast<std::size_t>(key)];
+    if (b < 0) {
+        if (free_bins_.empty()) return false;
+        b = free_bins_.back();
+        free_bins_.pop_back();
+        PulseBin& q = bins_[static_cast<std::size_t>(b)];
+        q.L = static_cast<int>(std::lround(std::exp((key + key0_) * lg)));
+        q.L = std::clamp(q.L, 2, kMaxPulse - 1);
+        const double th = kPi / q.L;
+        q.c2 = 2.0 * std::cos(th);
+        const double sh = std::sin(0.5 * th);
+        q.s2 = sh * sh;
+        q.y1 = q.y2 = q.x_now = q.x_next = 0.0;
+        q.pending = 0;
+        q.key = key;
+        bin_of_key_[static_cast<std::size_t>(key)] = b;
+        active_bins_.push_back(b);
+    }
+    PulseBin& q = bins_[static_cast<std::size_t>(b)];
+    // y[n] = c2 y[n-1] - y[n-2] + x[n] answers x = a (d[n] + d[n-1]) with
+    // a sin(th (n + 1/2)) / sin(th / 2); the pulse is area sin(th/2) sin(th (n + 1/2))
+    const double a = area * q.s2;
+    q.x_now += a;
+    q.x_next += a;
+    cancels_.push_back(Cancel{step_ + q.L, b, a});   // the same two impulses, L later
+    std::push_heap(cancels_.begin(), cancels_.end());
+    ++q.pending;
+    return true;
+}
+
+double SlideExciter::run_pulse_bins() {
+    // due cancellations: the pulse's two impulses again, at L and L + 1
+    while (!cancels_.empty() && cancels_.front().t == step_) {
+        const Cancel c = cancels_.front();
+        std::pop_heap(cancels_.begin(), cancels_.end());
+        cancels_.pop_back();
+        PulseBin& q = bins_[static_cast<std::size_t>(c.bin)];
+        q.x_now += c.a;
+        q.x_next += c.a;
+        --q.pending;
+    }
+    double sum = 0.0;
+    for (std::size_t i = 0; i < active_bins_.size();) {
+        PulseBin& q = bins_[static_cast<std::size_t>(active_bins_[i])];
+        const double x = q.x_now;
+        q.x_now = q.x_next;
+        q.x_next = 0.0;
+        const double y = q.c2 * q.y1 - q.y2 + x;
+        q.y2 = q.y1;
+        q.y1 = y;
+        sum += y;
+        if (q.pending == 0 && q.x_now == 0.0) {   // every pulse has ended: exactly 0 from here
+            bin_of_key_[static_cast<std::size_t>(q.key)] = -1;
+            free_bins_.push_back(active_bins_[i]);
+            active_bins_[i] = active_bins_.back();
+            active_bins_.pop_back();
+            continue;
+        }
+        ++i;
+    }
+    ++step_;
+    return sum;
 }
 
 double SlideExciter::lift_off_fraction() const {

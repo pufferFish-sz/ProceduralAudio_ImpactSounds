@@ -216,10 +216,35 @@ var ProcAudio = (function () {
         return true;
     }
 
-    // every ProcAudio instrument in the project: run when the project loads
+    // v2.5 game control: float parameters that override the dropdowns (-1 = off),
+    // so automation / game parameters can set them. [name, maximum]
+    var GAME_PARAMS = [["Game Motion", 3], ["Game Target", 5], ["Game Tgt Mat", 8],
+                       ["Game Tgt Finish", 3], ["Game Tgt Mount", 3], ["Game Obj Mount", 3]];
+
+    function addGameParameters(sound) {
+        var have = params(sound), added = false;
+        GAME_PARAMS.forEach(function (g) {
+            if (have[g[0]] !== undefined) return;
+            var p = studio.project.create("FloatPluginParameter");
+            p.name = g[0];
+            p.value = -1;
+            p.curve = "{(0.000000,-1.000000)(1.000000," + g[1].toFixed(6) + ")}";
+            sound.plugin.relationships.pluginParameters.add(p);
+            added = true;
+        });
+        return added;
+    }
+
+    // every ProcAudio instrument in the project: run when the project loads.
+    // Instruments saved by an older plug-in lack the newer parameters, and a
+    // bank build rejects them ("not compatible with their placed instances").
+    function upgradeOne(sound) {
+        var fit = addFitParameter(sound), game = addGameParameters(sound);
+        return fit || game;
+    }
     function upgradeAll() {
         return studio.project.model.PluginSound.findInstances().filter(isProcAudio)
-            .filter(addFitParameter).length;
+            .filter(upgradeOne).length;
     }
 
     function hasFit(sound) {
@@ -627,7 +652,8 @@ var ProcAudio = (function () {
         try {
             var upgraded = upgradeAll();
             if (upgraded)
-                console.log("ProcAudio: added the v2.4 Fit Length parameter to " + upgraded +
+                console.log("ProcAudio: added the newer plug-in parameters (v2.4 Fit Length, " +
+                            "v2.5 Game control) to " + upgraded +
                             " instrument(s); save the project to keep it.");
         } catch (e) {
             console.log("ProcAudio: could not upgrade instruments: " + e);
@@ -693,6 +719,6 @@ var ProcAudio = (function () {
 
     return { read: read, write: write, checkMotion: checkMotion, validMotions: validMotions,
              listOptions: listOptions, possible: possible,
-             setUp: setUp, fit: fit, updateFitted: updateFitted, upgradeAll: upgradeAll, lastRenderPath: lastRenderPath, importLastRender: importLastRender,
+             setUp: setUp, fit: fit, updateFitted: updateFitted, upgradeAll: upgradeAll, addGameParameters: addGameParameters, lastRenderPath: lastRenderPath, importLastRender: importLastRender,
              isProcAudio: isProcAudio, openPanel: openPanel, lastPlay: lastPlay, playOf: playOf, MOTIONS: MOTIONS };
 })();

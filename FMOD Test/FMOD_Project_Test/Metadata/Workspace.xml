@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <objects serializationModel="Studio.02.02.00">
 	<object class="Workspace" id="{0d243e96-1ca1-4d07-bbeb-8d06267b6122}">
+		<property name="builtBanksOutputDirectory">
+			<value>../../Unity Demo/ProceduralAudioDemo/Assets/FMODBuild</value>
+		</property>
+		<property name="builtBanksSeparateAssets">
+			<value>true</value>
+		</property>
+		<property name="builtBanksEncryptionKey" />
 		<relationship name="masterEventFolder">
 			<destination>{1d9aa424-b930-49fd-ac4a-a02319ba7d2b}</destination>
 		</relationship>

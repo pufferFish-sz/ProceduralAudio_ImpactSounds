@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="ParameterPreset" id="{1ef3554d-b94d-487e-8163-eeb5692dabf7}">
+		<property name="name">
+			<value>Target Shape</value>
+		</property>
+		<relationship name="folder">
+			<destination>{66d6283b-2199-49a5-8d0b-6b02fdded3fa}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{cac8295f-36bb-421c-9bdc-8cdaa2cf09fd}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{cac8295f-36bb-421c-9bdc-8cdaa2cf09fd}">
+		<property name="parameterType">
+			<value>2</value>
+		</property>
+		<property name="maximum">
+			<value>5</value>
+		</property>
+		<property name="enumerationLabels">
+			<value>Ball</value>
+			<value>Stick</value>
+			<value>Box</value>
+			<value>Panel</value>
+			<value>Ground</value>
+		</property>
+		<property name="initialValue">
+			<value>4</value>
+		</property>
+	</object>
+</objects>

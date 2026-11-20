@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="ParameterPresetFolder" id="{66d6283b-2199-49a5-8d0b-6b02fdded3fa}">
+		<property name="name">
+			<value>ProcAudio Contact</value>
+		</property>
+		<relationship name="folder">
+			<destination>{61f1de9f-7c85-4c55-9ca0-a048dfc56ff7}</destination>
+		</relationship>
+	</object>
+</objects>

@@ -216,31 +216,44 @@ void ContactVoice::drop(double v_drop, int offset) {
 
 void ContactVoice::process_stems(double* obj_out, double* floor_out, int n,
                                  const double* speed) {
+    // The contact force never depends on the bodies' ringing (impacts solve
+    // against their own copy of the modes, contact_modes_), so a block's force
+    // is computed first and the two modal banks then run over the whole block
+    // (SoundingBody::process_block: state in registers, ~4x faster).
+    constexpr int kBlock = 256;
+    double F[kBlock];
     const std::size_t nb = impact_buf_.size();
-    for (int i = 0; i < n; ++i) {
-        while (n_sched_ > 0 && sched_[0].at <= now_) {   // due drop hits
-            impact(sched_[0].v, 0, -1.0, sched_[0].m_eff);
-            for (int j = 1; j < n_sched_; ++j) sched_[j - 1] = sched_[j];
-            --n_sched_;
+    for (int done = 0; done < n; done += kBlock) {
+        const int m = std::min(kBlock, n - done);
+        for (int i = 0; i < m; ++i) {
+            while (n_sched_ > 0 && sched_[0].at <= now_) {   // due drop hits
+                impact(sched_[0].v, 0, -1.0, sched_[0].m_eff);
+                for (int j = 1; j < n_sched_; ++j) sched_[j - 1] = sched_[j];
+                --n_sched_;
+            }
+            double v = speed ? speed[done + i] : smooth_.process(target_);
+            double f = impact_buf_[impact_pos_];
+            impact_buf_[impact_pos_] = 0.0;
+            impact_pos_ = (impact_pos_ + 1) % nb;
+            if (motion_ == Motion::Roll && roll_) f += roll_->process(std::abs(v));
+            if (motion_ == Motion::Slide && slide_) f += slide_->process(v);
+            F[i] = f;
+            ++now_;
         }
-        double v = speed ? speed[i] : smooth_.process(target_);
-        double F = impact_buf_[impact_pos_];
-        impact_buf_[impact_pos_] = 0.0;
-        impact_pos_ = (impact_pos_ + 1) % nb;
-        if (motion_ == Motion::Roll && roll_) F += roll_->process(std::abs(v));
-        if (motion_ == Motion::Slide && slide_) F += slide_->process(v);
-        obj_out[i] = obj_snd_.process(F, -1.0);
-        double tg = floor_snd_.process(F, +1.0);
+        double* ob = obj_out + done;
+        double* fl = floor_out + done;
+        obj_snd_.process_block(F, ob, m, -1.0);
+        floor_snd_.process_block(F, fl, m, +1.0);
         if (tgt_delay_ > 0.0) {   // fractional delay, linear interpolation
-            tgt_pos_ = (tgt_pos_ + 1) & 63u;
-            tgt_hist_[tgt_pos_] = tg;
             const int di = static_cast<int>(tgt_delay_);
             const double fr = tgt_delay_ - di;
-            tg = (1.0 - fr) * tgt_hist_[(tgt_pos_ - di) & 63u] +
-                 fr * tgt_hist_[(tgt_pos_ - di - 1) & 63u];
+            for (int i = 0; i < m; ++i) {
+                tgt_pos_ = (tgt_pos_ + 1) & 63u;
+                tgt_hist_[tgt_pos_] = fl[i];
+                fl[i] = (1.0 - fr) * tgt_hist_[(tgt_pos_ - di) & 63u] +
+                        fr * tgt_hist_[(tgt_pos_ - di - 1) & 63u];
+            }
         }
-        floor_out[i] = tg;
-        ++now_;
     }
 }
 

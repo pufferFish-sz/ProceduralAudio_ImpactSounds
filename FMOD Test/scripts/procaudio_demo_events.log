@@ -1,0 +1,14 @@
+event: event:/Objects/Steel Ball
+event: event:/Objects/Glass Ball
+event: event:/Objects/Wooden Ball
+event: event:/Objects/Rubber Ball
+event: event:/Objects/Stone Ball
+event: event:/Objects/Plastic Ball
+event: event:/Objects/Tin Box
+event: event:/Objects/Wooden Box
+event: event:/Objects/Plastic Crate
+event: event:/Objects/Cardboard Box S
+event: event:/Objects/Cardboard Box M
+event: event:/Objects/Cardboard Box L
+event: event:/Objects/Wooden Stick
+save: true

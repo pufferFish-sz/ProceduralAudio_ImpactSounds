@@ -75,6 +75,12 @@ class ModalBank {
 public:
     void setup(const std::vector<Mode>& modes, double fs);
     double process(double force);
+    // n samples at once (out is overwritten): the same per-mode recursion as
+    // process(), with each mode's state kept in registers over the block and
+    // 8 modes per step (SSE2). The modes' sum is formed in groups of 8, so it
+    // can differ from process() in the last bits (~1e-16 relative); every mode
+    // itself is bit-identical. ~4x faster for banks of hundreds of modes.
+    void process_block(const double* force, double* out, int n);
     void reset();
     std::size_t size() const { return a1_.size(); }
 private:

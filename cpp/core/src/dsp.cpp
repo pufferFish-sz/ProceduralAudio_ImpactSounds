@@ -48,6 +48,9 @@ void PeriodicSpline::build(const std::vector<double>& y, double dx) {
     if (!is_pow2(n_)) throw std::invalid_argument("spline size must be 2^k");
     dx_ = dx;
     inv_dx_ = 1.0 / dx;
+    mask_ = n_ - 1;
+    h2_ = dx_ * dx_ / 6.0;
+    dx6_ = dx_ / 6.0;
     period_ = static_cast<double>(n_) * dx;
     // M[i-1] + 4 M[i] + M[i+1] = 6/dx^2 (y[i-1] - 2 y[i] + y[i+1]), cyclic:
     // diagonal in Fourier space, M_k = r_k / (4 + 2 cos(2 pi k / n)).
@@ -73,17 +76,15 @@ double PeriodicSpline::eval(double x, double* d1, double* d2) const {
     double u = x * inv_dx_;
     double fl = std::floor(u);
     double t = u - fl;
-    long long ii = static_cast<long long>(fl) % static_cast<long long>(n_);
-    if (ii < 0) ii += static_cast<long long>(n_);
-    std::size_t i = static_cast<std::size_t>(ii);
-    std::size_t j = (i + 1 == n_) ? 0 : i + 1;
+    // n_ is a power of 2: the mask is the (non-negative) modulo, also for x < 0
+    const std::size_t i = static_cast<std::size_t>(static_cast<long long>(fl)) & mask_;
+    const std::size_t j = (i + 1) & mask_;
     double yi = y_[i], yj = y_[j], mi = m_[i], mj = m_[j];
     double s = 1.0 - t;
-    double h2 = dx_ * dx_ / 6.0;
-    double val = s * yi + t * yj + h2 * ((s * s * s - s) * mi + (t * t * t - t) * mj);
+    double val = s * yi + t * yj + h2_ * ((s * s * s - s) * mi + (t * t * t - t) * mj);
     if (d1)
         *d1 = (yj - yi) * inv_dx_ +
-              dx_ / 6.0 * (-(3.0 * s * s - 1.0) * mi + (3.0 * t * t - 1.0) * mj);
+              dx6_ * (-(3.0 * s * s - 1.0) * mi + (3.0 * t * t - 1.0) * mj);
     if (d2) *d2 = s * mi + t * mj;
     return val;
 }
@@ -106,7 +107,7 @@ void Decimator::setup(int factor) {
     pos_ = 0;
     if (r_ == 1) {
         taps_.assign(1, 1.0);
-        hist_.assign(1, 0.0);
+        hist_.assign(2, 0.0);
         return;
     }
     const int ntaps = 20 * r_ + 1;
@@ -122,23 +123,22 @@ void Decimator::setup(int factor) {
         sum += taps_[i];
     }
     for (auto& t : taps_) t /= sum;   // unity DC gain (firwin scale=True)
-    hist_.assign(ntaps, 0.0);
+    hist_.assign(2 * static_cast<std::size_t>(ntaps), 0.0);
 }
 
 bool Decimator::push(double x, double& out) {
-    const std::size_t n = hist_.size();
+    const std::size_t n = taps_.size();
     hist_[pos_] = x;
+    hist_[pos_ + n] = x;
     bool emit = (count_ % r_) == 0;
     if (emit) {
         double acc = 0.0;
-        std::size_t p = pos_;
-        for (std::size_t k = 0; k < n; ++k) {
-            acc += taps_[k] * hist_[p];
-            p = (p == 0) ? n - 1 : p - 1;
-        }
+        const double* h = hist_.data() + pos_ + n;   // newest first, n back
+        const double* tp = taps_.data();
+        for (std::size_t k = 0; k < n; ++k) acc += tp[k] * h[-static_cast<std::ptrdiff_t>(k)];
         out = acc;
     }
-    pos_ = (pos_ + 1) % n;
+    if (++pos_ == n) pos_ = 0;
     ++count_;
     return emit;
 }

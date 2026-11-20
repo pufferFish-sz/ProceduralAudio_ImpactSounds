@@ -30,6 +30,13 @@
 //                  stay): fade to true silence this long after the start,
 //                  sample by sample, so a short instrument ends without a
 //                  cut. ProcAudio > Ending: Fit writes the instrument's length.
+//   Game Motion, Game Target, Game Tgt Mat, Game Tgt Finish,
+//   Game Tgt Mount, Game Obj Mount  float, -1 = off (v2.5, appended): game
+//                  control of the dropdowns. FMOD Studio applies automation and
+//                  game parameters to float plug-in parameters only, so a game
+//                  cannot set an int dropdown; each of these overrides one
+//                  (its value = the dropdown index) and -1 hands it back to the
+//                  deck. Not on the deck: automate them from event parameters.
 //
 // Dials display what they mean: Size "6.0 cm, 882 g, 7.5 kHz" (size used
 // after the shape's clamp, mass, lowest mode), Thickness "auto (2.4 cm)",
@@ -86,6 +93,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#endif
+
+#if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
+#include <xmmintrin.h>
+#define PA_HAVE_SSE 1
 #endif
 
 #include "fmod.h"
@@ -148,6 +160,13 @@ struct Prewarm {
     std::thread th;
     std::atomic<bool> stop{false};
     int users = 0;
+    // A host that exits without deregistering the plug-in (fmodstudiocl
+    // -script) would destroy a joinable thread: std::terminate, 0xC0000409.
+    // Joining here could deadlock under the loader lock, so let it go.
+    ~Prewarm() {
+        stop = true;
+        if (th.joinable()) th.detach();
+    }
 };
 Prewarm& prewarm() {
     static Prewarm p;
@@ -161,8 +180,16 @@ enum Param {
     P_T_SHAPE, P_T_MATERIAL, P_T_FINISH, P_T_MOUNT, P_T_SIZE, P_T_THICK, P_T_HIT,
     P_MOTION, P_SPEED, P_RENDER, P_LEVEL, P_CONTACTS,
     P_FIT,      // v2.4, appended: the indices above stay what game code uses
+    // v2.5, appended: game control. FMOD Studio applies automation (game
+    // parameters) to FLOAT plug-in parameters only; the dropdowns above are
+    // ints, so a game could never set them. Each of these floats overrides one
+    // dropdown: -1 = off (the deck's value), 0.. = that dropdown's index.
+    P_G_MOTION, P_G_TARGET, P_G_T_MATERIAL, P_G_T_FINISH, P_G_T_MOUNT, P_G_O_MOUNT,
     P_COUNT
 };
+constexpr int P_GAME_FIRST = P_G_MOTION, N_GAME = P_COUNT - P_G_MOTION;
+// the dropdown each game parameter overrides
+constexpr int kGameTarget[N_GAME] = {P_MOTION, P_T_SHAPE, P_T_MATERIAL, P_T_FINISH, P_T_MOUNT, P_O_MOUNT};
 
 // ---------------------------------------------------------- Fit Length
 // FMOD gives a plug-in no way to know its instrument's length, and Studio
@@ -337,6 +364,8 @@ private:
 
 struct State {
     double fs = 48000.0;
+    int deck[P_COUNT] = {};        // dropdown values as the deck set them
+    float game[N_GAME] = {-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};   // overrides, -1 = off
     // user thread
     BodyDesc obj = default_object(), tgt = default_target();
     int source = S_DECK;
@@ -547,6 +576,17 @@ FMOD_RESULT F_CALL cb_create(FMOD_DSP_STATE* s) {
     s->plugindata = state;
     if (capture_enabled())   // up to 30 s of this Play (Studio only: ~6 MB)
         state->cap.assign(static_cast<std::size_t>(30.0 * state->fs), 0.0f);
+    // the deck's dropdowns start at the defaults (a game override set back to
+    // -1 returns to these until the deck sends its own values)
+    state->deck[P_O_SHAPE] = static_cast<int>(state->obj.shape);
+    state->deck[P_O_MATERIAL] = material_index(state->obj.material);
+    state->deck[P_O_MOUNT] = static_cast<int>(state->obj.mount);
+    state->deck[P_T_SHAPE] = state->source == S_SAME ? 0 : static_cast<int>(state->tgt.shape) + 1;
+    state->deck[P_T_MATERIAL] = material_index(state->tgt.material);
+    state->deck[P_T_FINISH] = static_cast<int>(state->tgt.finish);
+    state->deck[P_T_MOUNT] = static_cast<int>(state->tgt.mount);
+    state->deck[P_MOTION] = state->wanted_motion;
+    state->deck[P_RENDER] = state->render.load();
     state->rebuild();
     return FMOD_OK;
 }
@@ -576,6 +616,17 @@ FMOD_RESULT F_CALL cb_setposition(FMOD_DSP_STATE* s, unsigned int pos) {
     return FMOD_OK;
 }
 
+// Decaying modal states turn into denormals, which cost ~100x on x86 (a
+// ringing-out box impact measured 2 % -> 280 % of a core). Flush them to
+// zero while a block renders (FTZ | DAZ), then restore the host's mode.
+struct DenormalGuard {
+#if PA_HAVE_SSE
+    unsigned old = _mm_getcsr();
+    DenormalGuard() { _mm_setcsr(old | 0x8040u); }
+    ~DenormalGuard() { _mm_setcsr(old); }
+#endif
+};
+
 FMOD_RESULT F_CALL cb_process(FMOD_DSP_STATE* s, unsigned int length,
                               const FMOD_DSP_BUFFER_ARRAY* /*in*/, FMOD_DSP_BUFFER_ARRAY* out,
                               FMOD_BOOL /*inputsidle*/, FMOD_DSP_PROCESS_OPERATION op) {
@@ -587,6 +638,7 @@ FMOD_RESULT F_CALL cb_process(FMOD_DSP_STATE* s, unsigned int length,
         }
         return FMOD_OK;
     }
+    DenormalGuard ftz;
     const long long pos0 = state->play_pos.fetch_add(length);   // this block's first sample
     const double fit = state->fit_len.load();
     const bool fitted = fit > 0.0;
@@ -690,9 +742,7 @@ BodyDesc* side(State* state, int index) {
     return index >= P_T_SHAPE ? &state->tgt : &state->obj;
 }
 
-FMOD_RESULT F_CALL cb_setint(FMOD_DSP_STATE* s, int index, int value) {
-    State* state = st(s);
-    state->free_retired();
+FMOD_RESULT apply_int(State* state, int index, int value) {
     BodyDesc* d = side(state, index);
     bool changed = false;
     switch (index) {
@@ -736,6 +786,31 @@ FMOD_RESULT F_CALL cb_setint(FMOD_DSP_STATE* s, int index, int value) {
     return FMOD_OK;
 }
 
+int game_slot(int index) {   // the game parameter overriding this dropdown, or -1
+    for (int k = 0; k < N_GAME; ++k)
+        if (kGameTarget[k] == index) return k;
+    return -1;
+}
+
+FMOD_RESULT F_CALL cb_setint(FMOD_DSP_STATE* s, int index, int value) {
+    State* state = st(s);
+    state->free_retired();
+    if (index < 0 || index >= P_COUNT) return FMOD_ERR_INVALID_PARAM;
+    state->deck[index] = value;
+    const int k = game_slot(index);
+    if (k >= 0 && state->game[k] > -0.5f) return FMOD_OK;   // a game override wins
+    return apply_int(state, index, value);
+}
+
+// game control (P_G_*): an override, or back to the deck's value
+FMOD_RESULT set_game(State* state, int index, float value) {
+    const int k = index - P_GAME_FIRST;
+    state->game[k] = value;
+    const int target = kGameTarget[k];
+    const int v = value > -0.5f ? static_cast<int>(std::lround(value)) : state->deck[target];
+    return apply_int(state, target, v);
+}
+
 FMOD_RESULT F_CALL cb_getint(FMOD_DSP_STATE* s, int index, int* value, char* str) {
     State* state = st(s);
     const BodyDesc* d = side(state, index);
@@ -771,6 +846,9 @@ FMOD_RESULT F_CALL cb_setfloat(FMOD_DSP_STATE* s, int index, float value) {
         case P_O_HIT: case P_T_HIT: field = &d->hit; break;
         case P_LEVEL: state->level_db.store(value); return FMOD_OK;
         case P_FIT: state->fit_len.store(std::max(0.0f, value)); return FMOD_OK;
+        case P_G_MOTION: case P_G_TARGET: case P_G_T_MATERIAL:
+        case P_G_T_FINISH: case P_G_T_MOUNT: case P_G_O_MOUNT:
+            return set_game(state, index, value);
         case P_SPEED: {
             const bool changed = value != state->speed.exchange(value);
             // Impact / Drop: a NEW value re-fires the one-shot (automation,
@@ -811,6 +889,11 @@ FMOD_RESULT F_CALL cb_getfloat(FMOD_DSP_STATE* s, int index, float* value, char*
         case P_SPEED: *value = state->speed.load(); break;
         case P_LEVEL: *value = state->level_db.load(); break;
         case P_FIT: *value = state->fit_len.load(); break;
+        case P_G_MOTION: case P_G_TARGET: case P_G_T_MATERIAL:
+        case P_G_T_FINISH: case P_G_T_MOUNT: case P_G_O_MOUNT:
+            *value = state->game[index - P_GAME_FIRST];
+            info = *value > -0.5f ? "game" : "off (deck)";
+            break;
         default: return FMOD_ERR_INVALID_PARAM;
     }
     char fit_info[32];
@@ -893,7 +976,7 @@ FMOD_RESULT F_CALL cb_sys_deregister(FMOD_DSP_STATE*) {
 FMOD_DSP_DESCRIPTION g_desc = {
     FMOD_PLUGIN_SDK_VERSION,
     "ProcAudio Contact",   // name: company/product, no version
-    0x00020400,            // plug-in version 2.4
+    0x00020500,            // plug-in version 2.5 (2.5: game control parameters)
     0,                     // no input: a sound module
     1,                     // one output buffer
     cb_create, cb_release, cb_reset,
@@ -978,6 +1061,26 @@ extern "C" F_EXPORT FMOD_DSP_DESCRIPTION* F_CALL FMODGetDSPDescription() {
             "Fade to silence at this time after the start: the instrument's length, written by "
             "ProcAudio > Ending: Fit (0 = off, the sound rings out)",
             0.0f, g_fit_vals, g_fit_pos);
+        // game control: plain linear floats, so FMOD Studio automation and
+        // game parameters set them exactly (-1 = off: the deck decides)
+        FMOD_DSP_INIT_PARAMDESC_FLOAT(P[P_G_MOTION], "Game Motion", "",
+            "Game control, overrides Motion: -1 off, 0 Impact, 1 Drop, 2 Roll, 3 Slide",
+            -1.0f, static_cast<float>(M_COUNT - 1), -1.0f);
+        FMOD_DSP_INIT_PARAMDESC_FLOAT(P[P_G_TARGET], "Game Target", "",
+            "Game control, overrides Target: -1 off, 0 Same as object, 1 Ball .. 5 Ground",
+            -1.0f, static_cast<float>(n_shapes), -1.0f);
+        FMOD_DSP_INIT_PARAMDESC_FLOAT(P[P_G_T_MATERIAL], "Game Tgt Mat", "",
+            "Game control, overrides Tgt Material: -1 off, else the material index",
+            -1.0f, static_cast<float>(pa::num_body_materials() - 1), -1.0f);
+        FMOD_DSP_INIT_PARAMDESC_FLOAT(P[P_G_T_FINISH], "Game Tgt Finish", "",
+            "Game control, overrides Tgt Finish: -1 off, 0 Bare, 1 Polished, 2 Tiled, 3 Carpeted",
+            -1.0f, static_cast<float>(static_cast<int>(pa::Finish::Count) - 1), -1.0f);
+        FMOD_DSP_INIT_PARAMDESC_FLOAT(P[P_G_T_MOUNT], "Game Tgt Mount", "",
+            "Game control, overrides Tgt Mount: -1 off, 0 Free, 1 Held, 2 Resting, 3 Built-in",
+            -1.0f, static_cast<float>(static_cast<int>(pa::Mount::Count) - 1), -1.0f);
+        FMOD_DSP_INIT_PARAMDESC_FLOAT(P[P_G_O_MOUNT], "Game Obj Mount", "",
+            "Game control, overrides Obj Mount: -1 off, 0 Free, 1 Held, 2 Resting, 3 Built-in",
+            -1.0f, static_cast<float>(static_cast<int>(pa::Mount::Count) - 1), -1.0f);
         for (int i = 0; i < P_COUNT; ++i) g_params[i] = &P[i];
         init = true;
     }

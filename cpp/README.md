@@ -29,8 +29,6 @@ tools/render.cpp          procaudio_render: scenes + golden-case runner
 tests/test_core.cpp       unit + real-time behaviour tests
 tests/golden.py           C++ vs Python golden tests
 plugins/fmod/             FMOD sound module (built only if FMOD_SDK_DIR is set)
-plugins/unity/            procaudio_unity.dll: C API for Unity (copied into
-                          Unity Demo/ProceduralAudioDemo/Assets/Plugins/x86_64)
 ```
 
 ## Build and test (Windows, Visual Studio 2022, CMake ≥ 3.20)
@@ -92,7 +90,7 @@ cpp/build/Release/procaudio_render.exe scene ball_drop    cpp/build/renders/ball
 It is written against the FMOD 2.02 plug-in API, to match the installed
 FMOD Studio 2.02.23.
 
-**Parameters (v2.4): any object against any target.** The design is in
+**Parameters (v2.5): any object against any target.** The design is in
 [`proto/docs/plugin_body_design.md`](../proto/docs/plugin_body_design.md).
 `procaudio_fmod.plugin.js` lays the deck out in three framed columns,
 OBJECT | TARGET | MOTION, with a line between object and target
@@ -117,6 +115,7 @@ ball rolls on a polished wood floor).
 | Level | dial, dB | gain over the calibration 0 dBFS = 63 Pa at 1 m (130 dB SPL), range −40…+80. Presets: Impact / Drop 0, Roll +35, Slide +50. |
 | Contacts | data | `ContactMsg[]` for game code: kind 0 impact, 1 slide, 2 roll, 3 release, 4 drop; sample offsets. The target id field is reserved for the body registry (phase 4). |
 | Fit Length (v2.4, "Fit length") | log dial, s | 0 = off: the sound rings as long as it rings. Otherwise the plug-in fades its own output to true silence, sample by sample, ending 1 ms before this time after the start (raised-cosine fade of 30% of the length, 5–100 ms; label `ends at 0.15 s (45 ms fade)`). **ProcAudio › Ending: Fit** writes the instrument's length here. It comes after Contacts, so the other indices stay what game code uses. |
+| Game Motion, Game Target, Game Tgt Mat, Game Tgt Finish, Game Tgt Mount, Game Obj Mount (v2.5) | float, −1 = off | Game control of the dropdowns. FMOD Studio applies automation and game parameters to **float** plug-in parameters only, so an event parameter can never set an int dropdown (Motion, Target, …). Each of these overrides one dropdown with its index (Game Target: 0 = Same as object, 1 Ball … 5 Ground); −1 hands it back to the deck. Not on the deck: automate them from event parameters (the Unity demo's `FMOD Test/scripts/procaudio_demo_events.js` does). Appended after Fit Length, so the other indices stay. Instruments saved with an older plug-in need the parameters added (the ProcAudio Studio script does it when a project opens) or a bank build rejects them. |
 
 The defaults (Ball / metal / 6 cm on a built-in, varnished 2.4 m wood panel)
 are v1.2's "Steel ball L" on "Varnished wood". **Events made with an

@@ -4,14 +4,18 @@ using UnityEngine;
 
 namespace ProcAudio
 {
-    // Same order as the C++ enums (procaudio/body_desc.h) and pa::body_material().
+    // Same order as the C++ enums (procaudio/body_desc.h), the plug-in's
+    // dropdowns and the FMOD "Target ..." parameter labels.
     public enum PaShape { Ball, Stick, Box, Panel, Ground }
     public enum PaMaterial { Metal, Glass, Wood, Plastic, Rubber, Stone, Cardboard, Concrete, Ceramic }
     public enum PaMount { Free, Held, Resting, BuiltIn }
     public enum PaFinish { Bare, Polished, Tiled, Carpeted }
 
     /// <summary>
-    /// One sounding body, as the C++ model sees it (pa::BodyDesc).
+    /// One sounding body, as the ProcAudio Contact plug-in sees it (pa::BodyDesc).
+    /// Objects carry it baked into their FMOD event; as a target it is sent
+    /// through the event's Target Shape / Material / Finish / Mount / Size /
+    /// Thickness parameters.
     /// Size means: Ball diameter, Stick length, Box longest side (the box is
     /// size x 2/3 size x 2/3 size), Panel longer span, Ground slab span.
     /// Thickness 0 = the shape/material default (stick section, box wall, plate).
@@ -47,15 +51,6 @@ namespace ProcAudio
             var d = this;
             d.mount = m;
             return d;
-        }
-
-        public ProcAudioNative.PaDesc ToNative()
-        {
-            return new ProcAudioNative.PaDesc
-            {
-                shape = (int)shape, material = (int)material, size = size, thickness = thickness,
-                mount = (int)mount, hit = hit, finish = (int)finish
-            };
         }
 
         /// <summary>Identity of the description (voices are cached by it).</summary>

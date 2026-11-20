@@ -16,10 +16,11 @@ namespace ProcAudio
     }
 
     /// <summary>
-    /// Switches what a surface is (sound model, look, physics material) between
-    /// a list of options. The HUD dropdown and the number keys drive it.
+    /// Switches what a surface is (the body it describes to the objects' FMOD
+    /// events, its look, its physics material) between a list of options. The HUD
+    /// dropdown and the number keys drive it.
     /// </summary>
-    [RequireComponent(typeof(ProcAudioSurface))]
+    [RequireComponent(typeof(SoundBody))]
     public class SurfaceSelector : MonoBehaviour
     {
         public List<SurfaceOption> options = new List<SurfaceOption>();
@@ -30,10 +31,10 @@ namespace ProcAudio
 
         public event Action<int> Changed;
 
-        ProcAudioSurface surface;
+        SoundBody surface;
         readonly Dictionary<int, PhysicsMaterial> physics = new Dictionary<int, PhysicsMaterial>();
 
-        void Awake() => surface = GetComponent<ProcAudioSurface>();
+        void Awake() => surface = GetComponent<SoundBody>();
 
         void Start() => Select(current, force: true);
 
@@ -44,7 +45,8 @@ namespace ProcAudio
             if (i == current && !force) return;
             current = i;
             var o = options[i];
-            surface.SetDescription(o.description, o.name);
+            surface.description = o.description;
+            surface.displayName = o.name;
             foreach (var r in renderers) SurfaceLook.Apply(r, o.look, faceSize);
             if (!physics.TryGetValue(i, out var pm))
             {
@@ -59,11 +61,16 @@ namespace ProcAudio
                 physics[i] = pm;
             }
             foreach (var c in colliders) c.sharedMaterial = pm;
-            if (ProcAudioEngine.Instance != null) ProcAudioEngine.Instance.AddLog($"Floor is now: {o.name}");
+            var mgr = ContactAudioManager.Instance;
+            if (mgr != null && !force)
+            {
+                mgr.AddLog($"Floor is now: {o.name}");
+                mgr.WarmUp(surface);   // build the objects' roll / slide tables for it
+            }
             Changed?.Invoke(i);
         }
 
-        /// <summary>The demo's floors: what the C++ model offers for a floor.</summary>
+        /// <summary>The demo's floors: what the plug-in offers for a floor.</summary>
         public static List<SurfaceOption> DefaultOptions()
         {
             SurfaceOption O(string n, BodyDescription d, SurfacePattern p, Color c, float smooth, float mPerTile,

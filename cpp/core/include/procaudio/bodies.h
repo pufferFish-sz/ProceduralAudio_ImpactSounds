@@ -89,6 +89,9 @@ class SoundingBody {
 public:
     void setup(const Body& body, double fs);
     double process(double force, double sign);
+    // n samples at once (out overwritten), same result as n process() calls up
+    // to the modal sum's grouping (ModalBank::process_block)
+    void process_block(const double* force, double* out, int n, double sign);
     void reset();
 private:
     ModalBank bank_;

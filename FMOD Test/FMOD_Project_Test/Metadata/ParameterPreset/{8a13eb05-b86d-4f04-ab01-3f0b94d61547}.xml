@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.02.00">
+	<object class="ParameterPreset" id="{8a13eb05-b86d-4f04-ab01-3f0b94d61547}">
+		<property name="name">
+			<value>Target Thickness</value>
+		</property>
+		<relationship name="folder">
+			<destination>{66d6283b-2199-49a5-8d0b-6b02fdded3fa}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{8223a27d-b12e-4996-97c9-50cdb8f26505}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{8223a27d-b12e-4996-97c9-50cdb8f26505}">
+		<property name="maximum">
+			<value>0.29999999999999999</value>
+		</property>
+		<property name="initialValue">
+			<value>0</value>
+		</property>
+	</object>
+</objects>

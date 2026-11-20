@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using FMODUnity;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -13,7 +14,9 @@ namespace ProcAudio.EditorTools
     /// <summary>
     /// ProcAudio ▸ Build Impact Demo Scene: generates Assets/Scenes/ImpactDemo.unity
     /// (room, floor with selectable surface, rug / steel plate / table / ramp,
-    /// objects, first-person player, HUD). Re-running it overwrites the scene, so
+    /// objects, first-person player, HUD). Every object plays its FMOD event
+    /// event:/Objects/&lt;Name&gt; (made by FMOD Test/scripts/procaudio_demo_events.js:
+    /// keep the object list there in step with this one). Re-running it overwrites the scene, so
     /// tweak the generated scene directly, or change this script and rebuild.
     /// </summary>
     public static class DemoSceneBuilder
@@ -37,7 +40,7 @@ namespace ProcAudio.EditorTools
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             // ---------------------------------------------------------- engine + light
-            new GameObject("ProcAudio Engine").AddComponent<ProcAudioEngine>();
+            new GameObject("Contact Audio Manager").AddComponent<ContactAudioManager>();
 
             var sun = new GameObject("Sun").AddComponent<Light>();
             sun.type = LightType.Directional;
@@ -55,7 +58,7 @@ namespace ProcAudio.EditorTools
             var floorGo = Box("Floor (selectable surface)", room, new Vector3(0f, -0.1f, 0f), new Vector3(16f, 0.2f, 12f),
                               Mat("Floor", new Color(0.62f, 0.62f, 0.6f), 0.2f));
             var options = SurfaceSelector.DefaultOptions();
-            var floorSurf = floorGo.AddComponent<ProcAudioSurface>();
+            var floorSurf = floorGo.AddComponent<SoundBody>();
             floorSurf.displayName = options[0].name;
             floorSurf.description = options[0].description;
             var selector = floorGo.AddComponent<SurfaceSelector>();
@@ -67,7 +70,7 @@ namespace ProcAudio.EditorTools
 
             var walls = new GameObject("Walls (concrete)").transform;
             walls.SetParent(room);
-            var wallSurf = walls.gameObject.AddComponent<ProcAudioSurface>();
+            var wallSurf = walls.gameObject.AddComponent<SoundBody>();
             wallSurf.displayName = "Concrete wall";
             wallSurf.description = BodyDescription.Make(PaShape.Ground, PaMaterial.Concrete, 4f, PaMount.BuiltIn);
             var wallMat = Mat("Wall", new Color(0.82f, 0.8f, 0.76f), 0.1f);
@@ -90,7 +93,7 @@ namespace ProcAudio.EditorTools
             // table: one surface (the top rings; the legs count as the table too)
             var table = new GameObject("Wooden table").transform;
             table.SetParent(fixtures);
-            var tSurf = table.gameObject.AddComponent<ProcAudioSurface>();
+            var tSurf = table.gameObject.AddComponent<SoundBody>();
             tSurf.displayName = "Wooden table";
             tSurf.description = BodyDescription.Make(PaShape.Panel, PaMaterial.Wood, 1.8f, PaMount.BuiltIn, PaFinish.Polished, 0.025f);
             var tableMat = Mat("Table", new Color(0.5f, 0.32f, 0.18f), 0.55f);
@@ -103,7 +106,7 @@ namespace ProcAudio.EditorTools
             // ramp: varnished plank on a block, for rolling balls
             var ramp = new GameObject("Varnished ramp").transform;
             ramp.SetParent(fixtures);
-            var rSurf = ramp.gameObject.AddComponent<ProcAudioSurface>();
+            var rSurf = ramp.gameObject.AddComponent<SoundBody>();
             rSurf.displayName = "Varnished ramp";
             rSurf.description = BodyDescription.Make(PaShape.Panel, PaMaterial.Wood, 3f, PaMount.BuiltIn, PaFinish.Polished, 0.03f);
             const float angle = 12f;
@@ -122,22 +125,22 @@ namespace ProcAudio.EditorTools
             // ---------------------------------------------------------- objects
             var objects = new GameObject("Objects").transform;
             const float T = 0.76f;   // table top
-            Ball("Steel ball", objects, PaMaterial.Metal, 0.06f, new Vector3(-0.6f, T, 3.35f), Mat("Steel", new Color(0.75f, 0.76f, 0.78f), 0.85f, 1f), Phys("Steel", 0.3f, 0.45f));
-            Ball("Glass ball", objects, PaMaterial.Glass, 0.05f, new Vector3(-0.42f, T, 3.65f), Mat("Glass", new Color(0.65f, 0.85f, 0.9f), 0.95f), Phys("Glass", 0.3f, 0.5f));
-            Ball("Wooden ball", objects, PaMaterial.Wood, 0.1f, new Vector3(-0.15f, T, 3.4f), Mat("Wood", new Color(0.72f, 0.52f, 0.3f), 0.3f), Phys("Wood", 0.4f, 0.35f));
-            BoxBody("Tin box", objects, PaMaterial.Metal, 0.15f, 0f, new Vector3(0.25f, T, 3.5f), Mat("Tin", new Color(0.6f, 0.62f, 0.66f), 0.6f, 0.8f), Phys("Tin", 0.3f, 0.3f));
-            BoxBody("Wooden box", objects, PaMaterial.Wood, 0.2f, 0f, new Vector3(0.6f, T, 3.45f), Mat("Wood box", new Color(0.66f, 0.46f, 0.26f), 0.25f), Phys("Wood", 0.4f, 0.35f));
+            Ball("Steel Ball", objects, PaMaterial.Metal, 0.06f, 7850f, new Vector3(-0.6f, T, 3.35f), Mat("Steel", new Color(0.75f, 0.76f, 0.78f), 0.85f, 1f), Phys("Steel", 0.3f, 0.45f));
+            Ball("Glass Ball", objects, PaMaterial.Glass, 0.05f, 2500f, new Vector3(-0.42f, T, 3.65f), Mat("Glass", new Color(0.65f, 0.85f, 0.9f), 0.95f), Phys("Glass", 0.3f, 0.5f));
+            Ball("Wooden Ball", objects, PaMaterial.Wood, 0.1f, 700f, new Vector3(-0.15f, T, 3.4f), Mat("Wood", new Color(0.72f, 0.52f, 0.3f), 0.3f), Phys("Wood", 0.4f, 0.35f));
+            BoxBody("Tin Box", objects, PaMaterial.Metal, 0.15f, 0f, 0.63f, new Vector3(0.25f, T, 3.5f), Mat("Tin", new Color(0.6f, 0.62f, 0.66f), 0.6f, 0.8f), Phys("Tin", 0.3f, 0.3f));
+            BoxBody("Wooden Box", objects, PaMaterial.Wood, 0.2f, 0f, 0.6f, new Vector3(0.6f, T, 3.45f), Mat("Wood box", new Color(0.66f, 0.46f, 0.26f), 0.25f), Phys("Wood", 0.4f, 0.35f));
 
-            Ball("Rubber ball", objects, PaMaterial.Rubber, 0.12f, new Vector3(1.5f, 0f, 0f), Mat("Rubber", new Color(0.85f, 0.2f, 0.15f), 0.35f), Phys("Rubber", 0.85f, 0.75f, PhysicsMaterialCombine.Maximum));
-            Ball("Stone ball", objects, PaMaterial.Stone, 0.14f, new Vector3(-3.8f, 0f, -5f), Mat("Stone", new Color(0.5f, 0.5f, 0.48f), 0.3f), Phys("Stone", 0.5f, 0.2f));
-            Ball("Plastic ball", objects, PaMaterial.Plastic, 0.08f, new Vector3(-4.3f, 0f, -5.2f), Mat("Plastic", new Color(0.2f, 0.45f, 0.85f), 0.6f), Phys("Plastic", 0.35f, 0.45f));
-            Stick("Wooden stick", objects, PaMaterial.Wood, 0.6f, 0.03f, new Vector3(-1.5f, 0f, 1f), Mat("Stick", new Color(0.78f, 0.6f, 0.38f), 0.3f), Phys("Wood", 0.4f, 0.35f));
-            BoxBody("Plastic crate", objects, PaMaterial.Plastic, 0.35f, 0f, new Vector3(2.5f, 0f, 2.5f), Mat("Crate", new Color(0.25f, 0.6f, 0.35f), 0.5f), Phys("Plastic", 0.35f, 0.4f));
+            Ball("Rubber Ball", objects, PaMaterial.Rubber, 0.12f, 1100f, new Vector3(1.5f, 0f, 0f), Mat("Rubber", new Color(0.85f, 0.2f, 0.15f), 0.35f), Phys("Rubber", 0.85f, 0.75f, PhysicsMaterialCombine.Maximum));
+            Ball("Stone Ball", objects, PaMaterial.Stone, 0.14f, 2600f, new Vector3(-3.8f, 0f, -5f), Mat("Stone", new Color(0.5f, 0.5f, 0.48f), 0.3f), Phys("Stone", 0.5f, 0.2f));
+            Ball("Plastic Ball", objects, PaMaterial.Plastic, 0.08f, 1050f, new Vector3(-4.3f, 0f, -5.2f), Mat("Plastic", new Color(0.2f, 0.45f, 0.85f), 0.6f), Phys("Plastic", 0.35f, 0.45f));
+            Stick("Wooden Stick", objects, PaMaterial.Wood, 0.6f, 0.03f, 0.35f, new Vector3(-1.5f, 0f, 1f), Mat("Stick", new Color(0.78f, 0.6f, 0.38f), 0.3f), Phys("Wood", 0.4f, 0.35f));
+            BoxBody("Plastic Crate", objects, PaMaterial.Plastic, 0.35f, 0f, 1.2f, new Vector3(2.5f, 0f, 2.5f), Mat("Crate", new Color(0.25f, 0.6f, 0.35f), 0.5f), Phys("Plastic", 0.35f, 0.4f));
             var card = Mat("Cardboard", new Color(0.72f, 0.55f, 0.36f), 0.05f);
             var cardPhys = Phys("Cardboard", 0.45f, 0.05f);
-            BoxBody("Cardboard box S", objects, PaMaterial.Cardboard, 0.4f, 0f, new Vector3(-2f, 0f, -1f), card, cardPhys);
-            BoxBody("Cardboard box M", objects, PaMaterial.Cardboard, 0.5f, 0f, new Vector3(-2.8f, 0f, 0.2f), card, cardPhys);
-            BoxBody("Cardboard box L", objects, PaMaterial.Cardboard, 0.6f, 0f, new Vector3(2.8f, 0f, -1.5f), card, cardPhys);
+            BoxBody("Cardboard Box S", objects, PaMaterial.Cardboard, 0.4f, 0f, 0.32f, new Vector3(-2f, 0f, -1f), card, cardPhys);
+            BoxBody("Cardboard Box M", objects, PaMaterial.Cardboard, 0.5f, 0f, 0.5f, new Vector3(-2.8f, 0f, 0.2f), card, cardPhys);
+            BoxBody("Cardboard Box L", objects, PaMaterial.Cardboard, 0.6f, 0f, 0.72f, new Vector3(2.8f, 0f, -1.5f), card, cardPhys);
 
             // ---------------------------------------------------------- player
             var player = new GameObject("Player");
@@ -155,7 +158,7 @@ namespace ProcAudio.EditorTools
             var cam = camGo.AddComponent<Camera>();
             cam.nearClipPlane = 0.03f;
             cam.fieldOfView = 70f;
-            camGo.AddComponent<AudioListener>();
+            camGo.AddComponent<StudioListener>();   // the FMOD listener (no Unity AudioListener)
             fps.cameraPivot = camGo.transform;
             var grabber = camGo.AddComponent<ObjectGrabber>();
             grabber.cam = cam;
@@ -188,60 +191,67 @@ namespace ProcAudio.EditorTools
         static void Patch(string name, Transform parent, Vector3 pos, Vector3 scale, BodyDescription d, LookSpec look, PhysicsMaterial pm)
         {
             var go = Box(name, parent, pos, scale, Mat(name, look.color, look.smoothness, look.metallic));
-            var s = go.AddComponent<ProcAudioSurface>();
+            var s = go.AddComponent<SoundBody>();
             s.displayName = name;
             s.description = d;
             go.AddComponent<SurfaceLook>().look = look;
             go.GetComponent<Collider>().sharedMaterial = pm;
         }
 
-        static ProcAudioBody Body(GameObject go, string name, BodyDescription d, Material mat, PhysicsMaterial pm)
+        const string EventFolder = "event:/Objects/";
+
+        static SoundBody Body(GameObject go, string name, BodyDescription d, float mass, Material mat, PhysicsMaterial pm)
         {
             go.name = name;
             go.isStatic = false;
             go.GetComponent<Renderer>().sharedMaterial = mat;
             go.GetComponent<Collider>().sharedMaterial = pm;
             var rb = go.AddComponent<Rigidbody>();
+            rb.mass = mass;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
             rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
             rb.angularDamping = d.shape == PaShape.Ball ? 0.3f : 0.05f;   // balls: some rolling resistance
-            var src = go.AddComponent<AudioSource>();
-            src.playOnAwake = false;
-            src.spatialBlend = 1f;
-            var b = go.AddComponent<ProcAudioBody>();
+            var b = go.AddComponent<SoundBody>();
             b.displayName = name;
             b.description = d;
+            string path = EventFolder + name;
+            try { b.soundEvent = EventReference.Find(path); }
+            catch (System.Exception e) { Debug.LogError($"[ProcAudio] {path}: {e.Message}"); }
+            if (b.soundEvent.Guid.IsNull)
+                Debug.LogError($"[ProcAudio] FMOD event {path} not found: run procaudio_demo_events.js and build the banks");
             return b;
         }
 
-        static void Ball(string name, Transform parent, PaMaterial m, float diameter, Vector3 restOn, Material mat, PhysicsMaterial pm)
+        // a solid ball of this density (kg/m^3)
+        static void Ball(string name, Transform parent, PaMaterial m, float diameter, float density, Vector3 restOn, Material mat, PhysicsMaterial pm)
         {
             var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             go.transform.SetParent(parent, false);
             go.transform.position = restOn + Vector3.up * (diameter * 0.5f + 0.002f);
             go.transform.localScale = Vector3.one * diameter;
-            Body(go, name, BodyDescription.Make(PaShape.Ball, m, diameter), mat, pm);
+            float r = diameter * 0.5f;
+            Body(go, name, BodyDescription.Make(PaShape.Ball, m, diameter), density * 4f / 3f * Mathf.PI * r * r * r, mat, pm);
         }
 
         // Box: size x 2/3 size x 2/3 size (the model's box), lying on its big face
-        static void BoxBody(string name, Transform parent, PaMaterial m, float size, float wall, Vector3 restOn, Material mat, PhysicsMaterial pm)
+        static void BoxBody(string name, Transform parent, PaMaterial m, float size, float wall, float mass, Vector3 restOn, Material mat, PhysicsMaterial pm)
         {
             var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
             go.transform.SetParent(parent, false);
             float h = size * 2f / 3f;
             go.transform.position = restOn + Vector3.up * (h * 0.5f + 0.002f);
             go.transform.localScale = new Vector3(size, h, h);
-            Body(go, name, BodyDescription.Make(PaShape.Box, m, size, PaMount.Free, PaFinish.Bare, wall), mat, pm);
+            Body(go, name, BodyDescription.Make(PaShape.Box, m, size, PaMount.Free, PaFinish.Bare, wall), mass, mat, pm);
         }
 
-        static void Stick(string name, Transform parent, PaMaterial m, float length, float section, Vector3 restOn, Material mat, PhysicsMaterial pm)
+        static void Stick(string name, Transform parent, PaMaterial m, float length, float section, float mass, Vector3 restOn, Material mat, PhysicsMaterial pm)
         {
             var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
             go.transform.SetParent(parent, false);
             go.transform.position = restOn + Vector3.up * (section * 0.5f + 0.002f);
             go.transform.localScale = new Vector3(length, section, section);
             go.transform.rotation = Quaternion.Euler(0f, 30f, 0f);
-            Body(go, name, BodyDescription.Make(PaShape.Stick, m, length, PaMount.Free, PaFinish.Bare, section, 0.8f), mat, pm);
+            Body(go, name, BodyDescription.Make(PaShape.Stick, m, length, PaMount.Free, PaFinish.Bare, section, 0.8f), mass, mat, pm);
         }
 
         static Material Mat(string name, Color c, float smoothness, float metallic = 0f)
@@ -351,10 +361,7 @@ namespace ProcAudio.EditorTools
             template.sizeDelta = new Vector2(template.sizeDelta.x, 230f);
 
             Spacer(panel.transform, 6f);
-            hud.impactSlider = SliderRow(panel.transform, res, "Impact", out hud.impactLabel);
-            hud.rollSlider = SliderRow(panel.transform, res, "Roll", out hud.rollLabel);
-            hud.slideSlider = SliderRow(panel.transform, res, "Slide", out hud.slideLabel);
-            hud.masterSlider = SliderRow(panel.transform, res, "Master", out hud.masterLabel);
+            hud.masterSlider = SliderRow(panel.transform, res, "FMOD master", out hud.masterLabel);
             Spacer(panel.transform, 6f);
             hud.hintText = Label(panel.transform,
                 "WASD move · Shift run · Space jump\n" +

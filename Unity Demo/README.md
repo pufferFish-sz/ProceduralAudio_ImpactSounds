@@ -1,13 +1,14 @@
-# ProceduralAudioDemo (Unity 6000.3)
+# ProceduralAudioDemo (Unity 6000.3, FMOD for Unity 2.02)
 
-A first-person room for trying the procedural contact sounds (`cpp/`) in a game
-scene. The physics drives the C++ model directly. There are no samples and no
-FMOD.
+A first-person room for trying the procedural contact sounds in a game scene.
+The sound goes through **FMOD**. Every object has its own FMOD event, played
+by the ProcAudio Contact plug-in (`cpp/plugins/fmod`). The game only sends
+contacts: who touched what, how fast, and whether it was an impact, a roll or
+a slide.
 
-Open `Assets/Scenes/ImpactDemo.unity` and press Play. The first Play after
-opening the Editor builds about 300 voices on worker threads, which takes
-~20 s. The HUD shows "Building voices… N left" until it finishes. The tables
-stay cached in the Editor process, so later Play sessions are faster.
+Open `Assets/Scenes/ImpactDemo.unity` and press Play. At start the contact
+manager plays silent instances that build the plug-in's rolling and sliding
+tables (about 20 s; the HUD shows "Warming up… N left").
 
 ## Controls
 
@@ -17,95 +18,114 @@ stay cached in the Editor process, so later Play sessions are faster.
 | Left click | pick up / let go |
 | Right click | throw (while holding) |
 | Mouse wheel | hold distance |
-| Aim at the floor or table while holding | the object is pressed onto it; move the mouse to slide it |
-| Walk into a box | push it across the floor |
+| Aim at the floor or table while holding | the object is pressed onto it; move the mouse to slide it (a held ball slides). A picked-up object first comes 25 cm toward you and off the surface, so aim a little lower (or scroll out) to press it down again |
+| Walk into a box | push it |
 | 1–7 or the dropdown | ground surface: concrete, wood, varnished wood, tiles, carpet, stone, steel deck |
 | R | reset all objects |
 | Tab / Esc | free the cursor for the panel; click the scene to look again |
 
-The panel sliders set the Impact / Roll / Slide / Master levels. The defaults
-are the FMOD plug-in's presets (0 / +35 / +50 dB): rolling and sliding are
-physically much quieter than impacts. The bottom-left readout shows what the
-object under the crosshair is doing (rolling 0.84 m/s on Rug, last hit …).
-The top-right log lists recent impacts.
+## FMOD side
 
-## The scene
+FMOD project: `FMOD Test/FMOD_Project_Test`. It builds its banks into
+`Assets/FMODBuild/Desktop`.
 
-- **Floor**: switchable, as above. It changes the sound model, the look and the
-  physics material.
-- **Fixed surfaces**:
-  - rug (carpet on wood)
-  - 8 mm steel plate
-  - varnished wooden table
-  - varnished ramp for rolling balls
-  - concrete walls
-- **Objects**:
-  - balls: steel, glass, wood, rubber, stone, plastic
-  - tin box
-  - wooden box
-  - wooden stick
-  - plastic crate
-  - three cardboard boxes
+**Events.** `event:/Objects/<Name>`, one per object, all in the Impacts
+bank. Each event holds one ProcAudio Contact instrument with that object's
+body baked in (shape, material, size). The other body is never baked in:
+the game describes it through parameters, so any object can meet any other
+object or surface without authoring the combinations.
 
-  Masses come from the model (density × shape).
+**Parameters.** Shared presets in the "ProcAudio Contact" folder:
 
-Rebuild the scene from scratch with **ProcAudio ▸ Build Impact Demo Scene**
-(`Assets/ProcAudio/Editor/DemoSceneBuilder.cs`). Rebuilding overwrites the
-scene, so either tweak the generated scene directly or change the builder and
-rebuild.
+| parameter | values | drives |
+|---|---|---|
+| Motion | Impact, Roll, Slide | Game Motion (overrides the Motion dropdown), and Level (0 / +35 / +50 dB) |
+| Speed | m/s | hit speed, or rolling / slip speed |
+| Held | Free, Held | Game Obj Mount |
+| Target Shape | Ball, Stick, Box, Panel, Ground | Game Target |
+| Target Material | metal … ceramic | Game Tgt Mat |
+| Target Finish | Bare, Polished, Tiled, Carpeted | Game Tgt Finish |
+| Target Mount | Free, Held, Resting, Built-in | Game Tgt Mount |
+| Target Size | m | Tgt Size |
+| Target Thickness | m (0 = auto) | Tgt Thickness |
 
-## How it works
+FMOD Studio applies automation to float plug-in parameters only, so the
+dropdowns are driven through the plug-in's v2.5 "Game" floats (−1 = off, else
+the dropdown index). Two other quirks shape the automation the script writes:
+- A labeled parameter holds the value of the point at or below it, so every
+  label has its own automation point.
+- On a dial with a breakpoint curve (Speed, Tgt Size, Tgt Thickness), Studio
+  interpolates in dial-position space, so there is a point at every
+  breakpoint.
 
-```
-Unity physics ── OnCollisionEnter: normal relative speed ──────────► impact(v)
-             └── OnCollisionStay: contact-point tangential speed ──► slide(speed)
-                                  centre tangential speed (balls) ─► roll(speed)
-                         │
-ProcAudioBody (C#) ──P/Invoke──► procaudio_unity.dll ─► pa::ContactVoice (cpp/core)
-                         ▲                                     │
-OnAudioFilterRead ◄──────┴──── pa_voice_process (audio thread) ◄┘
-```
+**Timeline.**
+- The instrument fills 0–0.1 s and is Async + Cut, with a 2.5 s AHDSR
+  release.
+- A sustain point at 0.05 s holds only while Motion is Roll or Slide.
+- An impact therefore rings out by itself.
+- A roll or slide plays until the game stops the instance.
 
-- `ProcAudioBody` (on each rigidbody) holds three native voices per surface:
-  - impact
-  - free roll/slide
-  - held slide (a held ball cannot turn, so it slides)
-
-  It also holds one impact voice per other body. Voices are keyed by the
-  surface's `BodyDescription`, so switching the floor builds new voices and
-  keeps the old ones. Switching back is instant.
-- `ProcAudioSurface` marks static colliders (and their children) as a
-  sounding surface. `SurfaceSelector` swaps the floor's description, look and
-  physics material.
-- Spatialization: each body's 3D `AudioSource` loops a constant-1.0 clip.
-  Unity applies distance attenuation (1/r from 1 m) and panning to it, and
-  `OnAudioFilterRead` multiplies the procedural signal in. Gains follow the
-  plug-in calibration: 0 dB = 63 Pa at 1 m.
-- Idle voices go dormant in the native engine (no modal-bank work), so the
-  ~300 voices cost nothing until something touches.
-
-## Native plug-in
-
-`Assets/Plugins/x86_64/procaudio_unity.dll` is built from
-`cpp/plugins/unity/procaudio_unity.cpp`, which is a C API over the core. To
-rebuild it, **close the Editor first** (it locks loaded DLLs), then:
+**Regenerating the events.** The events are generated by
+`FMOD Test/scripts/procaudio_demo_events.js`. With FMOD Studio closed:
 
 ```powershell
-cmake --build cpp/build --config Release --target procaudio_unity
+& "C:\Program Files\FMOD SoundSystem\FMOD Studio 2.02.23\fmodstudiocl.exe" -script "FMOD Test\scripts\procaudio_demo_events.js" "FMOD Test\FMOD_Project_Test\FMOD_Project_Test.fspro"
+& "C:\Program Files\FMOD SoundSystem\FMOD Studio 2.02.23\fmodstudiocl.exe" -build "FMOD Test\FMOD_Project_Test\FMOD_Project_Test.fspro"
 ```
 
-The post-build step copies the DLL into this project.
+Re-running refills existing events in place and keeps their GUIDs, which
+the scene references. If events are ever recreated (new GUIDs, same paths),
+run **ProcAudio ▸ Re-link Object Events** in Unity. It changes nothing else
+in the scene.
 
-## Scripts
+**Plug-in.** `procaudio_fmod.dll` lives in
+`Assets/Plugins/FMOD/platforms/win/lib/x86_64` and is listed under FMOD
+Settings ▸ Dynamic Plugins as `procaudio_fmod`. Building the CMake target
+`procaudio_fmod` copies it there. Close the Unity Editor first, because it
+locks the DLL.
+
+## Unity side
 
 `Assets/ProcAudio/Runtime/`:
 
 | file | role |
 |---|---|
-| `ProcAudioNative.cs` | P/Invoke bindings |
-| `BodyDescription.cs` | shape / material / size / mount / finish (mirrors `pa::BodyDesc`) |
-| `ProcAudioEngine.cs` | starts the engine, levels, event log, physics settings (10 ms step, low bounce threshold) |
-| `ProcAudioBody.cs` | physics → sound, audio rendering |
-| `ProcAudioSurface.cs`, `SurfaceSelector.cs`, `SurfaceLook.cs` | surfaces, floor switching, procedural textures |
+| `SoundBody.cs` | on every object and surface: its `BodyDescription` (what the plug-in models when it is the target) and, for objects, its FMOD event; forwards collisions |
+| `ContactAudioManager.cs` | the contact router (one per scene); see below |
+| `BodyDescription.cs` | shape / material / size / mount / finish (same order as the plug-in and the FMOD labels) |
+| `SurfaceSelector.cs`, `SurfaceLook.cs` | floor switching (description, look, physics material), procedural textures |
 | `FirstPersonController.cs`, `ObjectGrabber.cs` | player, pushing, grabbing |
-| `DemoHUD.cs` | panel, dropdown, sliders, readouts |
+| `DemoHUD.cs` | panel, dropdown, FMOD master volume, readouts |
+
+What `ContactAudioManager` does:
+
+- **One sound per contact.** Unity reports a collision to both rigidbodies,
+  so each pair has one owner and only the owner's report counts:
+  - an object against a surface: the object owns it;
+  - two objects: the ball (it rolls), else the held one, else the lighter
+    one.
+
+  The owner's event plays the pair.
+- **Impacts.** `OnCollisionEnter` creates a one-shot instance with
+  Motion = Impact and Speed = the normal speed.
+- **Rolls and slides.** `OnCollisionStay` keeps one instance per touching
+  pair. Speed is updated every physics step, and the instance is stopped when
+  the contact ends.
+- **Load gate.** A roll or slide sounds only while the contact carries at
+  least 30% of the object's weight (`Collision.impulse` ÷ timestep ÷ m·g,
+  smoothed over 30 ms) and has lasted 50 ms. Contacts moving apart steadily
+  (lifting off) stay silent, and a slide's volume follows its load, capped at
+  the resting weight. Picking an object up or brushing it over a surface no
+  longer whooshes.
+- **Debounce:**
+  - a minimum speed;
+  - a per-pair cooldown;
+  - contact chatter of a pair already touching must be a real re-hit
+    (≥ 0.35 m/s);
+  - no restart of a pair's roll / slide more often than every 0.25 s;
+  - caps on new impacts per step and on running rolls / slides.
+
+The HUD counts the instances made, so churn shows up there.
+
+To rebuild the scene from scratch, use **ProcAudio ▸ Build Impact Demo Scene**.
+It overwrites the scene, including any hand edits.
