@@ -1,193 +1,146 @@
-# Procedural Contact Audio — Python Prototype
+# Procedural Contact Audio for Games
 
-## Project summary
+Real-time procedural sound for physical contact in games and extended reality:
+impacts, drops, rolling and sliding. The sound is synthesized from the physics
+event itself (which bodies touch, what they are made of, how hard or fast they
+move) instead of being picked from a library of recorded samples.
 
-This is a master's thesis project (CMU 2026–27). It builds **real-time procedural
-audio for physical contact in games**: impacts, drops, sliding/scraping,
-granular surfaces (gravel/dirt/grass) and floor "thump". Sound is synthesized
-from the physics event (what hit what, how hard, how fast) instead of
-being picked from a library of recorded samples.
+A sound designer describes each body in everyday terms (shape, material, size,
+thickness, how it is held, surface finish). The game engine reports each
+contact and its speed. Everything else (vibration modes, contact hardness,
+rebound, relative loudness) is derived from those descriptions, so any object
+can meet any other object or surface without authoring the combinations.
 
-The end goal is a middleware plugin (FMOD and/or Wwise) driven from Unity /
-Unreal physics callbacks. A sound designer chooses an object (shape, size,
-material) and a surface. The engine supplies impact velocity and slide
-speed. The plugin renders a matching sound with no sample library.
+This is a master's thesis project at Carnegie Mellon University (2026–27).
 
-This repository is the **offline Python phase**. It checks the math from
-the reference papers, renders WAVs for listening and produces thesis figures
-before anything is ported to C++.
+## What is in this repository
 
-### Signal model (one object, many exciters)
+| Part | What it is | Details |
+|---|---|---|
+| [`proto/`](proto/README.md) | Python prototype: the reference implementation of every model, with numerical checks, listening scenes, figures and design notes | [proto/README.md](proto/README.md) |
+| [`cpp/`](cpp/README.md) | `procaudio-core`, a dependency-free C++17 library (impact, rolling, sliding), an offline renderer, and tests against the Python reference | [cpp/README.md](cpp/README.md) |
+| [`cpp/plugins/fmod/`](cpp/plugins/fmod) | **ProcAudio Contact**, an FMOD Studio sound-module plug-in with an object / target / motion deck and a Studio script menu | [cpp/README.md § FMOD plugin](cpp/README.md#fmod-plugin) |
+| [`Unity Demo/`](Unity%20Demo/README.md) | A first-person Unity scene where game physics drives the plug-in through FMOD events | [Unity Demo/README.md](Unity%20Demo/README.md) |
+| [`FMOD Test/`](FMOD%20Test) | The FMOD Studio project used by the demo, and the script that generates its events | [Unity Demo/README.md § FMOD side](Unity%20Demo/README.md#fmod-side) |
+
+## How it works
+
+Each contact sound is split into an **exciter** (the contact force) and a
+**resonator** (the vibrating bodies):
 
 ```
-             exciter (force f(t))                       resonator                 layers
- impact  ── Hunt–Crossley contact (m, v, k) ──┐
- slide   ── speed-driven friction noise    ───┼──> modal bank of the object ──┐
- debris  ── PhISEM grain streams (no modal) ──────────────────────────────────┼──> mix
- floor   ── momentum-scaled LF thump + noise ─────────────────────────────────┘
- object  = shape (mode frequencies) × material (tan φ → per-mode decay)
+ game engine            exciter (one per contact)           both bodies              radiation
+ impact  speed ──►  Hunt–Crossley contact (Hertz k) ─┐                       ┌──► radiation efficiency ─┐
+ rolling speed ──►  ball path over surface profile  ─┼─► contact force f(t) ─┤      (vibration → Pa)    ├─► Σ ─► p(t)
+ sliding speed ──►  lift-off and landings on profile ┘    on both bodies     └──► modal banks + click ──┘
+                         ▲                                                    │
+                         └──── impact only: displacement of both bodies ◄─────┘   (coupled solution)
 ```
 
-### What has been achieved (status 2026-10)
+- **Bodies.** Modes come from closed-form shapes (beam, plate, Lamb sphere).
+  A material sets both the decay of the modes (one internal-friction value,
+  tan φ) and their pitch and contact hardness (E, ρ, ν).
+- **Two-body contact.** Every contact is two bodies sharing one force; a
+  floor is just another body. Hardness (Hertz), effective mass and
+  restitution are calculated from the two descriptions, so *N* bodies need
+  *N* descriptions, not an *N* × *N* table.
+- **Physical levels.** A radiation model converts each body's vibration to
+  sound pressure at 1 m, so the balance between object and floor, and
+  between impacts, rolling and sliding, comes from the physics rather than a
+  mix.
 
-| # | stage | what it shows | gate result |
-|---|-------|---------------|-------------|
-| 1 | modal bank | exact-pole modal resonator; analytic vs measured decay | PASS, err < 0.1 % |
-| 2 | object + impact | **A** one scalar (tan φ) swaps 5 materials; **B** Hunt–Crossley contact: contact time falls with k and v, harder = brighter, stable for k = 1e5…1e12 at 44.1 kHz with an audio-rate implicit solver (real-time shape); **C** mode sets computed from geometry + E/ρ (bar, rod, pipe, disc) and hardness k from the two materials (Hertz) | PASS |
-| 3 | friction + aggregate | slide level tracks speed (corr 0.987), silent after stop; gravel/dirt/grass textures (grass v3, layered) | PASS (verify grass by ear) |
-| 4 | ground | floor drop as a two-body contact: one force pulse drives the object, its contact click and the floor (shared pressure units); legacy hand-mixed layer kept for A/B | PASS: impulse conserved, wood floor is 39 dB over concrete (needs real recordings) |
-| 5 | full pipeline | bouncing ball (wood floor + concrete) / sliding box / tumble driven by simulated physics; `*_legacy.wav` for A/B | PASS (verify by ear) |
+The formulas, with their sources, are in
+[`proto/docs/formulas_explained.md`](proto/docs/formulas_explained.md).
 
-Key results so far:
-- **Material is one number.** tan φ (Klatzky et al.) moves the same shape from
-  metal to rubber, and the measured decay matches theory within a few percent.
-- **Impact is modal + velocity + hardness.** The impact layer adds no resonator.
-  It shapes a force pulse from (striker mass, v, k), and that pulse drives the
-  object's own modes. Material therefore enters twice: as tan φ (ring time) and
-  as E (hardness k, pitch scale).
-- **A real-time integrator exists.** The implicit audio-rate scheme matches the
-  RK4 reference within about 6 % in contact time and 0 % in centroid, so it is
-  the C++ candidate.
-- **Shapes can come from geometry.** `core/shapes.py` derives modes for bars,
-  rods, pipes and discs. The old `SHAPES` presets are hand-authored and come
-  from no 3D shape.
+## Getting started
 
-Next steps, open questions and the plugin roadmap are in
-[`proto/docs/plan_and_brainstorm.md`](proto/docs/plan_and_brainstorm.md).
+Requirements (Windows): Visual Studio 2022, CMake ≥ 3.20, a Python 3.11
+conda environment, FMOD Studio and the FMOD Engine SDK 2.02.23, and Unity
+6000.3 with FMOD for Unity 2.02.
 
-## Environment
-
-Conda env `procaudio` (python 3.11 + numpy/scipy/matplotlib via conda,
-soundfile via pip). On this machine it lives in the user's miniconda:
+**1. Python prototype** (from the repository root):
 
 ```powershell
 conda create -n procaudio -y python=3.11 numpy scipy matplotlib
 & $env:USERPROFILE\miniconda3\envs\procaudio\python.exe -m pip install soundfile
-```
-
-## Running the stage gates
-
-Run from the repo root. Each stage writes WAVs to `proto/renders/` and
-figures to `proto/figures/`, and prints PASS/FAIL:
-
-```powershell
 $py = "$env:USERPROFILE\miniconda3\envs\procaudio\python.exe"
-& $py -m proto.stages.stage1_modal_bank
-& $py -m proto.stages.stage2_object_impact
-& $py -m proto.stages.stage3_friction_aggregate
-& $py -m proto.stages.stage4_ground
-& $py -m proto.stages.stage5_full_pipeline
+& $py -m proto.scenes.ball_drop      # renders WAVs to proto/renders/scenes/
 ```
 
-## Listening scenes (consistent renders)
+More stages and scenes: [proto/README.md](proto/README.md).
 
-The stage scripts above are **math checks**: their renders use test
-objects (hand-typed mode sets, a generic mallet). For listening, use the
-**scenes**. In a scene, every body is a real, fully specified object
-(size + material), its modes come from physics (`core/shapes.py`), contact
-hardness comes from Hertz theory, and every body radiates through one
-radiation-efficiency model. Nothing is hand-mixed.
+**2. C++ core and tests:**
 
 ```powershell
-& $py -m proto.scenes.ball_drop      # rubber ball, small/large, onto 3 floors
-& $py -m proto.scenes.stick_strike   # wooden stick strikes wood/steel/stone bars
-& $py -m proto.scenes.slide          # plank slides to a stop: A noise vs B surface-profile model
-& $py -m proto.scenes.tumble         # small wood/steel block tumbles to rest
-& $py -m proto.scenes.footsteps      # 4 steps on gravel/dirt/grass (+ old grass)
-& $py -m proto.scenes.roll           # ball/can/battery rolling, each vs a real recording
-& $py -m proto.scenes.drag           # plank/steel box dragged by hand, vs real recordings
-& $py -m proto.scenes.roll spheres   # small/large solid wood and steel balls on a varnished wood floor
-& $py -m proto.scenes.drag boxes     # small/large cardboard and steel boxes, one long pull on concrete
+cmake -S cpp -B cpp/build -G "Visual Studio 17 2022" -A x64
+cmake --build cpp/build --config Release
+cpp/build/Release/procaudio_tests.exe
+& $py cpp/tests/golden.py            # C++ against the Python reference
 ```
 
-These replace the stage 3–5 listening renders (sliding box, aggregate
-textures, ground drop, bouncing ball, tumble). Footsteps are the one
-family without physical levels: the aggregate layer is normalized per
-layer, and its manifest says so.
+**3. FMOD plug-in:** configure with the SDK path, build, then copy the
+plug-in files into FMOD Studio's plug-in folder (steps in
+[cpp/README.md § FMOD plugin](cpp/README.md#fmod-plugin)):
 
-File names say what happens:
-`<action>_<mover>_<how>_<onto|on>_<target>.wav`, e.g.
-`drop_rubber-ball-small-r15mm_from-1m_onto_wood-floor.wav`,
-`slide_wood-plank-40x8x2cm_shoved-2.5mps_on_concrete-slab.wav`,
-`walk_4-steps_every-0.55s_on_grass.wav`. Each family
-folder in `proto/renders/scenes/` has:
-- a `README.md` manifest (what you hear, object specs, modes, contact
-  time, restitution, which body carries how much energy);
-- `stems/` with each body on its own (`...__ONLY-<body>.wav`).
-
-All files in a family share one gain, so loudness differences are physical.
-Spectrogram overview: `proto/figures/scenes_<family>.png` (each panel is
-normalized on its own).
-
-## Layout
-
-```
-cpp/          C++ core (impact, rolling, sliding), FMOD plugin, golden tests
-              against proto/ -- see cpp/README.md
-proto/
-  core/       modal_bank, materials (tan_phi + E/rho/nu) [ref2], shapes
-              (analytic bar/rod/pipe/disc), impact [ref1] (+ Hertz k),
-              friction [ref4], aggregate [ref4], ground [ref3],
-              contact (unified two-body impact), radiation (pressure proxy +
-              radiation efficiency), bodies (scene objects + 2-body contact)
-  analysis/   decay_fit (band-env fitting), spectro (specgram/centroid),
-              mode_extract (stretch: modes from a recorded tap)
-  sim/        trajectories (bouncing_ball, sliding_box, tumble)
-  stages/     runnable stage gates 1..5 (math checks, test objects)
-  scenes/     listening scenes from fully specified bodies (core/bodies.py)
-  renders/    WAV output          figures/  PNG output
-  docs/       formulas_explained.md (per-stage formulas, plain language)
-              evaluation_protocol.md (thesis eval chapter draft)
-              two_body_impact_related_work.md
-              plan_and_brainstorm.md (next steps, design questions)
-              archetypes.md (sourced archetype list: materials, formulas)
-              sliding_sound_literature.md (sliding models, diagnosis)
-              rolling_sliding_vs_recordings.md (recordings analysis,
-              rolling model, slide fixes, render-vs-real numbers)
-              cpp_plugin_design.md (C++ core + FMOD/Wwise plugin design)
-              plugin_body_design.md (any object vs any object: Shape +
-              Material + Size + Mount, FMOD deck, phases)
-  recordings/ put real reference recordings here (see its README)
+```powershell
+cmake -S cpp -B cpp/build "-DFMOD_SDK_DIR=C:/Program Files (x86)/FMOD SoundSystem/FMOD Studio API Windows"
+cmake --build cpp/build --config Release
 ```
 
-## Implementation notes / deviations from spec
+**4. Unity demo:** open `Unity Demo/ProceduralAudioDemo` in Unity 6000.3,
+open `Assets/Scenes/ImpactDemo.unity` and press Play. Pick up, throw, roll
+and drag objects, and switch between seven floor surfaces with keys 1–7.
+Controls and the FMOD setup are in [Unity Demo/README.md](Unity%20Demo/README.md).
 
-- **Notebooks → scripts.** `proto/stages/*.py` are plain runnable scripts with
-  printed PASS/FAIL gates. They are easier to re-run and diff than .ipynb, and
-  can be converted later if the thesis needs notebooks.
-- **Stage renumbering (2026-10).** The former stage 2 (materials) and stage 3
-  (impact) are now one stage, `stage2_object_impact`, because they are one
-  layer: the impact is just the force that excites the object. Former stages
-  4–6 are now 3–5.
-- **Impact integrators.** `core/impact.py` has three paths:
-  RK4 at an adaptive oversampled rate (ground truth); an audio-rate implicit
-  trapezoidal scheme that solves the per-sample delay-free nonlinearity
-  (K-method in spirit, and the real-time C++ shape); and an open-loop
-  rigid-wall force pulse as a fallback. At k=1e8 the implicit scheme matches
-  RK4 contact time within ~6 % and centroid exactly. Both are stable for
-  k=1e5..1e12.
-- **Contact time = first x>0 segment.** With a light, strongly damped
-  resonator the surface re-collides with the barely-rebounding striker
-  (micro-bounces; `info["n_contacts"]`). The paper's monotone trends hold in
-  the hammer-vs-heavy-resonator regime (stage 2B uses modal mass 0.5 kg vs a
-  striker of 8 g for the trend gates). With light objects, contact time vs v
-  can flatten, which is worth a thesis remark. Stage 2C drops whole objects,
-  where the object's own mass is the striker. That gives 0.5–1.6 ms contacts
-  and a darker sound.
-- **Hunt–Crossley force clamped at f >= 0** (no adhesion pull-off).
-- **Aggregate v2/v3.** v1 pushed all grains through one shared bandpass
-  ("beads on a drum head"). v2 randomizes each grain's resonance and adds an
-  AM-noise bed. v3 rebuilds grass, which v2 rendered as a stationary hiss
-  swell, from layered swish grains, crackles and a thin bed with lognormal
-  amplitudes. `stage3_aggregate_grass_v2.wav` is kept for A/B listening.
-- **No "is it ground?" branch.** `core/contact.py` treats every hit as two
-  bodies sharing one contact force. The floor is just the other body, and
-  its sound model (light plank floor vs massive slab) decides how much it
-  adds. Every body is converted to one pressure proxy (`core/radiation.py`),
-  so levels are not hand-mixed. The legacy `ground_layer` (momentum-driven,
-  hand gain) is kept only for A/B renders.
-- **Ground layer** is deliberately far simpler than Qu & James. See the
-  docstring in `core/ground.py` for the exact list of simplifications (thesis
-  subsection "real-time approximation of an offline method").
-- **Windows note:** run with `$env:PYTHONIOENCODING='utf-8'` if you add any
-  non-ASCII prints (all current output is ASCII).
+## Status (2026-11)
+
+| Part | State |
+|---|---|
+| Python prototype | Stage gates 1–5 pass; listening scenes for drops, strikes, tumbling, rolling, sliding, footsteps and grass |
+| C++ core | Impact, rolling and sliding ported; unit and real-time tests and golden tests against Python pass ([details](cpp/README.md#status-2026-10-28)) |
+| FMOD plug-in | v2.5: any object against any target, driven from game parameters; tested inside the FMOD engine |
+| Unity demo | Physics-driven impacts, rolls and slides through FMOD events, on seven floor surfaces |
+
+Not done yet:
+- comparison with calibrated recordings, and a listening test;
+- granular surfaces (gravel, dirt, grass) in C++ and FMOD (Python only);
+- a floor voice shared by all contacts on one surface, and SIMD, to lower the
+  cost per voice;
+- Wwise and Unreal Engine integration.
+
+## Repository layout
+
+```
+proto/          Python prototype (reference implementation)
+  core/         models: modal bank, materials, shapes, impact, contact, rolling,
+                sliding (slide_profile), radiation, bodies, aggregate, grass
+  stages/       numerical stage gates 1–5 (print PASS/FAIL)
+  scenes/       listening scenes from fully specified bodies
+  analysis/     decay fitting, spectra, texture statistics
+  docs/         design notes and formulas (see below)
+  recordings/   reference recordings used for comparison
+  renders/      rendered WAVs        figures/  PNG figures
+cpp/
+  core/         procaudio-core library (include/procaudio, src)
+  plugins/fmod/ ProcAudio Contact FMOD plug-in, Studio deck and menu scripts
+  tools/        procaudio_render: offline scenes and golden-case runner
+  tests/        C++ unit tests, golden tests, FMOD host checks
+FMOD Test/      FMOD Studio project for the demo, event-generator script
+Unity Demo/     Unity 6 demo project (ProcAudio runtime scripts, scene builder)
+```
+
+## Design notes
+
+In [`proto/docs/`](proto/docs):
+
+| Document | Contents |
+|---|---|
+| [formulas_explained.md](proto/docs/formulas_explained.md) | every formula per stage, with its source |
+| [plugin_body_design.md](proto/docs/plugin_body_design.md) | any body from shape, material, size and mount; pair physics; FMOD deck; motion rules |
+| [cpp_plugin_design.md](proto/docs/cpp_plugin_design.md) | C++ core architecture, real-time rules, what the game sends |
+| [rolling_sliding_vs_recordings.md](proto/docs/rolling_sliding_vs_recordings.md) | rolling and sliding models compared with recordings; the radiation model |
+| [sliding_sound_literature.md](proto/docs/sliding_sound_literature.md) | sliding and scraping models in the literature |
+| [two_body_impact_related_work.md](proto/docs/two_body_impact_related_work.md) | prior work on collisions between two ringing bodies |
+| [archetypes.md](proto/docs/archetypes.md) | material table and mode formulas for common objects |
+| [evaluation_protocol.md](proto/docs/evaluation_protocol.md) | planned perceptual evaluation |
+| [plan_and_brainstorm.md](proto/docs/plan_and_brainstorm.md) | roadmap and open design questions |
