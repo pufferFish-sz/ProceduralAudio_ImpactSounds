@@ -30,6 +30,10 @@ namespace ProcAudio
         [Tooltip("Position gain: fraction of the gap closed per physics step")]
         public float follow = 0.5f;
         public float maxSpeed = 10f;
+        [Tooltip("Let go when the object stays this far (m) from where it is held for jamTime: it is " +
+                 "wedged in geometry (under a table, between legs) and the hold keeps forcing it in")]
+        public float jamDistance = 0.3f;
+        public float jamTime = 0.5f;
         public LayerMask mask = ~0;
 
         public SoundBody Held => heldBody;
@@ -42,6 +46,7 @@ namespace ProcAudio
         bool savedGravity;
         RigidbodyInterpolation savedInterp;
         Vector3 target;
+        float jamFor;
 
         void Awake()
         {
@@ -83,7 +88,12 @@ namespace ProcAudio
             if (rb == null || rb.isKinematic || rb.mass > maxCarryMass) return;
             held = rb;
             heldBody = rb.GetComponent<SoundBody>();
-            if (heldBody != null) heldBody.held = true;
+            if (heldBody != null)
+            {
+                heldBody.held = true;
+                heldBody.pressedOn = null;   // picked up: carried, not pressed
+            }
+            jamFor = 0f;
             holdDistance = Mathf.Clamp(hit.distance - pickUpLift, minHold, maxHold);
             savedGravity = rb.useGravity;
             savedDamping = rb.linearDamping;
@@ -108,7 +118,11 @@ namespace ProcAudio
             held.angularDamping = savedAngularDamping;
             held.interpolation = savedInterp;
             if (throwVelocity != Vector3.zero) held.linearVelocity += throwVelocity;
-            if (heldBody != null) heldBody.held = false;
+            if (heldBody != null)
+            {
+                heldBody.held = false;
+                heldBody.pressedOn = null;
+            }
             held = null;
             heldBody = null;
         }
@@ -139,12 +153,18 @@ namespace ProcAudio
                 if (playerCollider != null && h.collider == playerCollider) continue;
                 if (h.distance < best) { best = h.distance; bestHit = h; }
             }
+            SoundBody pressing = null;
             if (best < float.MaxValue)
             {
                 float ext = HalfExtentAlong(held, bestHit.normal);
                 Vector3 onSurface = bestHit.point + bestHit.normal * (ext - pressDepth);
-                if ((onSurface - origin).magnitude < holdDistance + 0.01f) target = onSurface;
+                if ((onSurface - origin).magnitude < holdDistance + 0.01f)
+                {
+                    target = onSurface;
+                    pressing = bestHit.collider.GetComponentInParent<SoundBody>();
+                }
             }
+            if (heldBody != null) heldBody.pressedOn = pressing;
 
             Vector3 v = (target - held.position) * (follow / Time.fixedDeltaTime);
             held.linearVelocity = Vector3.ClampMagnitude(v, maxSpeed);
@@ -157,7 +177,10 @@ namespace ProcAudio
                 ? axis * (angle * Mathf.Deg2Rad * 0.3f / Time.fixedDeltaTime)
                 : Vector3.zero;
 
-            if ((held.position - target).magnitude > 1.5f) Release(Vector3.zero);   // snagged
+            // snagged far away, or wedged: the hold keeps forcing it into geometry
+            float gap = (held.position - target).magnitude;
+            jamFor = gap > jamDistance ? jamFor + Time.fixedDeltaTime : 0f;
+            if (gap > 1.5f || jamFor > jamTime) Release(Vector3.zero);
         }
 
         static float HalfExtentAlong(Rigidbody rb, Vector3 dir)

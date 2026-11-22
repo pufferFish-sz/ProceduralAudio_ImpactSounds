@@ -13,6 +13,14 @@ can meet any other object or surface without authoring the combinations.
 
 This is a master's thesis project at Carnegie Mellon University (2026–27).
 
+## Demo video
+
+[![Procedural contact audio: Unity demo (watch on YouTube)](https://img.youtube.com/vi/yO-YJDNprkA/hqdefault.jpg)](https://youtu.be/yO-YJDNprkA)
+
+The [Unity demo](Unity%20Demo/README.md) in action: impacts, drops, rolling and
+sliding, all synthesized live from the game's physics through the FMOD plug-in.
+Click the image to watch on YouTube.
+
 ## What is in this repository
 
 | Part | What it is | Details |

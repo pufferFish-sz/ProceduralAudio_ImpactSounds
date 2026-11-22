@@ -27,6 +27,9 @@ namespace ProcAudio
 
         /// <summary>Set by the grabber while the player holds this object.</summary>
         [NonSerialized] public bool held;
+        /// <summary>While held: the surface the grabber is pressing it onto (null = carried in
+        /// the air). Only a slide on this surface sounds.</summary>
+        [NonSerialized] public SoundBody pressedOn;
 
         public Rigidbody Body { get; private set; }
         public bool IsDynamic => Body != null && !Body.isKinematic;
